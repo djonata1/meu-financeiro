@@ -12,6 +12,7 @@ export default function LoginPage() {
 
   const [loading, setLoading] = useState(false);
   const [reenviando, setReenviando] = useState(false);
+  const [recuperando, setRecuperando] = useState(false);
 
   const [mensagem, setMensagem] = useState("");
   const [mostrarReenviar, setMostrarReenviar] = useState(false);
@@ -25,13 +26,21 @@ export default function LoginPage() {
 
     try {
       if (modo === "cadastro") {
+        if (!nome.trim()) {
+          setMensagem("Digite seu nome.");
+          return;
+        }
+
+        if (senha.length < 6) {
+          setMensagem("A senha precisa ter pelo menos 6 caracteres.");
+          return;
+        }
+
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
           password: senha,
-
           options: {
             emailRedirectTo: `${window.location.origin}/auth/callback`,
-
             data: {
               nome: nome.trim(),
             },
@@ -42,14 +51,6 @@ export default function LoginPage() {
           setMensagem(error.message);
           return;
         }
-
-        /*
-         * O Supabase pode não retornar erro quando o e-mail
-         * já existe, por questões de segurança.
-         *
-         * Por isso mostramos a orientação para verificar
-         * o e-mail e, se necessário, reenviar a confirmação.
-         */
 
         if (data.user) {
           setMensagem(
@@ -65,7 +66,9 @@ export default function LoginPage() {
         });
 
         if (error) {
-          setMensagem("E-mail ou senha incorretos.");
+          setMensagem(
+            "E-mail ou senha incorretos. Se esqueceu sua senha, use a opção abaixo."
+          );
           return;
         }
 
@@ -83,7 +86,9 @@ export default function LoginPage() {
   }
 
   async function reenviarConfirmacao() {
-    if (!email.trim()) {
+    const emailLimpo = email.trim();
+
+    if (!emailLimpo) {
       setMensagem("Digite seu e-mail primeiro.");
       return;
     }
@@ -94,22 +99,31 @@ export default function LoginPage() {
     try {
       const { error } = await supabase.auth.resend({
         type: "signup",
-        email: email.trim(),
+        email: emailLimpo,
         options: {
-          emailRedirectTo: "http://192.168.1.12:3000/login",
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
         },
       });
 
       if (error) {
+        const msg = error.message.toLowerCase();
+
         if (
-          error.message.toLowerCase().includes("already confirmed") ||
-          error.message.toLowerCase().includes("already been confirmed")
+          msg.includes("already confirmed") ||
+          msg.includes("already been confirmed")
         ) {
           setMensagem(
             "Esse e-mail já foi confirmado. Agora é só entrar com seu e-mail e senha."
           );
 
           setMostrarReenviar(false);
+        } else if (
+          msg.includes("rate limit") ||
+          msg.includes("too many")
+        ) {
+          setMensagem(
+            "Você atingiu o limite de envio de e-mails. Aguarde um pouco e tente novamente."
+          );
         } else {
           setMensagem(error.message);
         }
@@ -118,16 +132,68 @@ export default function LoginPage() {
       }
 
       setMensagem(
-        "Novo e-mail de confirmação enviado! Verifique sua caixa de entrada."
+        "Novo e-mail de confirmação enviado! Verifique sua caixa de entrada e a pasta de spam."
       );
     } catch (error) {
       console.error(error);
 
       setMensagem(
-        "Não foi possível reenviar agora. Tente novamente em alguns segundos."
+        "Não foi possível reenviar agora. Aguarde alguns segundos e tente novamente."
       );
     } finally {
       setReenviando(false);
+    }
+  }
+
+  async function recuperarSenha() {
+    const emailLimpo = email.trim();
+
+    if (!emailLimpo) {
+      setMensagem("Digite seu e-mail primeiro.");
+      return;
+    }
+
+    setRecuperando(true);
+    setMensagem("");
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        emailLimpo,
+        {
+          redirectTo: `${window.location.origin}/login/reset-password`,
+        }
+      );
+
+      if (error) {
+        const msg = error.message.toLowerCase();
+
+        if (
+          msg.includes("rate limit") ||
+          msg.includes("too many")
+        ) {
+          setMensagem(
+            "O limite de envio de e-mails foi atingido. Aguarde um pouco e tente novamente."
+          );
+        } else {
+          setMensagem(
+            "Não foi possível enviar o e-mail de recuperação. Tente novamente."
+          );
+        }
+
+        return;
+      }
+
+      setMensagem(
+        "Enviamos um link para redefinir sua senha. Verifique seu e-mail e clique no link."
+      );
+    } catch (error) {
+      console.error(error);
+
+      setMensagem(
+        "Ocorreu um erro ao enviar o e-mail. Tente novamente."
+      );
+    } finally {
+      setRecuperando(false);
     }
   }
 
@@ -160,8 +226,6 @@ export default function LoginPage() {
           boxShadow: "0 25px 80px rgba(0,0,0,.35)",
         }}
       >
-        {/* CABEÇALHO */}
-
         <div
           style={{
             textAlign: "center",
@@ -208,11 +272,7 @@ export default function LoginPage() {
           </p>
         </div>
 
-        {/* FORMULÁRIO */}
-
         <form onSubmit={handleSubmit}>
-          {/* NOME */}
-
           {modo === "cadastro" && (
             <div style={{ marginBottom: "16px" }}>
               <label>Nome</label>
@@ -227,8 +287,6 @@ export default function LoginPage() {
             </div>
           )}
 
-          {/* E-MAIL */}
-
           <div style={{ marginBottom: "16px" }}>
             <label>E-mail</label>
 
@@ -242,9 +300,7 @@ export default function LoginPage() {
             />
           </div>
 
-          {/* SENHA */}
-
-          <div style={{ marginBottom: "20px" }}>
+          <div style={{ marginBottom: "8px" }}>
             <label>Senha</label>
 
             <input
@@ -258,7 +314,34 @@ export default function LoginPage() {
             />
           </div>
 
-          {/* MENSAGEM */}
+          {modo === "login" && (
+            <div
+              style={{
+                textAlign: "right",
+                marginBottom: "18px",
+              }}
+            >
+              <button
+                type="button"
+                onClick={recuperarSenha}
+                disabled={recuperando}
+                style={{
+                  background: "none",
+                  border: 0,
+                  color: "#20e58a",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  cursor: recuperando ? "not-allowed" : "pointer",
+                  padding: 0,
+                  opacity: recuperando ? 0.7 : 1,
+                }}
+              >
+                {recuperando
+                  ? "Enviando..."
+                  : "Esqueci minha senha"}
+              </button>
+            </div>
+          )}
 
           {mensagem && (
             <div
@@ -277,11 +360,9 @@ export default function LoginPage() {
             </div>
           )}
 
-          {/* BOTÃO PRINCIPAL */}
-
           <button
             type="submit"
-            disabled={loading || reenviando}
+            disabled={loading || reenviando || recuperando}
             style={{
               width: "100%",
               border: 0,
@@ -291,8 +372,12 @@ export default function LoginPage() {
               color: "#06131d",
               fontSize: "16px",
               fontWeight: 800,
-              cursor: loading ? "not-allowed" : "pointer",
-              opacity: loading ? 0.7 : 1,
+              cursor:
+                loading || reenviando || recuperando
+                  ? "not-allowed"
+                  : "pointer",
+              opacity:
+                loading || reenviando || recuperando ? 0.7 : 1,
             }}
           >
             {loading
@@ -302,8 +387,6 @@ export default function LoginPage() {
                 : "Criar minha conta"}
           </button>
         </form>
-
-        {/* REENVIAR CONFIRMAÇÃO */}
 
         {modo === "cadastro" && mostrarReenviar && (
           <button
@@ -329,8 +412,6 @@ export default function LoginPage() {
               : "Reenviar e-mail de confirmação"}
           </button>
         )}
-
-        {/* TROCAR ENTRE LOGIN E CADASTRO */}
 
         <div
           style={{
