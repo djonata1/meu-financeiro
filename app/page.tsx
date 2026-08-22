@@ -850,6 +850,10 @@ export default function Home() {
     icon: "🎯",
   });
 
+  const [editingGoalId, setEditingGoalId] = useState<number | null>(null);
+  const [goalAmountGoal, setGoalAmountGoal] = useState<Goal | null>(null);
+  const [goalAmount, setGoalAmount] = useState("");
+
   const [cardForm, setCardForm] = useState({
     name: "",
     brand: "VISA",
@@ -1494,20 +1498,81 @@ export default function Home() {
     );
   }
 
-  function addToGoal(goal: Goal) {
-    const value = window.prompt(
-      `Quanto deseja adicionar à meta "${goal.name}"?`
+  function startEditGoal(goal: Goal) {
+    setEditingGoalId(goal.id);
+    setGoalForm({
+      name: goal.name,
+      target: String(goal.target),
+      current: String(goal.current),
+      deadline: goal.deadline,
+      icon: goal.icon,
+    });
+    setModal("goal");
+  }
+
+  function updateGoal(e: FormEvent) {
+    e.preventDefault();
+
+    const target = Number(goalForm.target.replace(",", "."));
+    const currentValue = Number(goalForm.current.replace(",", "."));
+
+    if (
+      editingGoalId === null ||
+      !goalForm.name ||
+      !target ||
+      currentValue < 0
+    ) {
+      return;
+    }
+
+    setGoals((current) =>
+      current.map((goal) =>
+        goal.id === editingGoalId
+          ? {
+              ...goal,
+              name: goalForm.name,
+              target,
+              current: Math.min(target, currentValue),
+              deadline: goalForm.deadline,
+              icon: goalForm.icon || "🎯",
+            }
+          : goal
+      )
     );
 
-    if (!value) return;
+    setEditingGoalId(null);
+    setModal(null);
+    setGoalForm({
+      name: "",
+      target: "",
+      current: "",
+      deadline: "2027-12-01",
+      icon: "🎯",
+    });
+  }
 
-    const amount = Number(value.replace(",", "."));
+  function addToGoal(goal: Goal) {
+    setGoalAmountGoal(goal);
+    setGoalAmount("");
+  }
 
-    if (!amount) return;
+  function closeGoalAmountModal() {
+    setGoalAmountGoal(null);
+    setGoalAmount("");
+  }
+
+  function confirmAddToGoal(e: FormEvent) {
+    e.preventDefault();
+
+    if (!goalAmountGoal) return;
+
+    const amount = Number(goalAmount.replace(",", "."));
+
+    if (!Number.isFinite(amount) || amount <= 0) return;
 
     setGoals((current) =>
       current.map((item) =>
-        item.id === goal.id
+        item.id === goalAmountGoal.id
           ? {
               ...item,
               current: Math.min(item.target, item.current + amount),
@@ -1515,6 +1580,8 @@ export default function Home() {
           : item
       )
     );
+
+    closeGoalAmountModal();
   }
 
   function closeCurrentMonth() {
@@ -1666,6 +1733,11 @@ export default function Home() {
             icon="chart"
             label="Investimentos"
             onClick={() => navigate("investments")}
+            hoverInfo={[
+              "Patrimônio investido • R$ 8.450,00",
+              "Rendimento • R$ 930,00",
+              "Rentabilidade • 12,38%",
+            ]}
           />
 
           <NavItem
@@ -1673,6 +1745,11 @@ export default function Home() {
             icon="chart"
             label="Relatórios"
             onClick={() => navigate("reports")}
+            hoverInfo={[
+              `Entradas • ${money(income)}`,
+              `Despesas • ${money(expenses)}`,
+              `Resultado • ${money(income - expenses)}`,
+            ]}
           />
         </nav>
 
@@ -1910,8 +1987,19 @@ export default function Home() {
             <GoalsPage
               dark={dark}
               goals={goals}
-              onNew={() => setModal("goal")}
+              onNew={() => {
+                setEditingGoalId(null);
+                setGoalForm({
+                  name: "",
+                  target: "",
+                  current: "",
+                  deadline: "2027-12-01",
+                  icon: "🎯",
+                });
+                setModal("goal");
+              }}
               onAdd={addToGoal}
+              onEdit={startEditGoal}
               onDelete={deleteGoal}
             />
           )}
@@ -2338,11 +2426,14 @@ export default function Home() {
 
       {modal === "goal" && (
         <Modal
-          title="Nova meta financeira"
-          onClose={() => setModal(null)}
+          title={editingGoalId !== null ? "Editar meta financeira" : "Nova meta financeira"}
+          onClose={() => {
+            setEditingGoalId(null);
+            setModal(null);
+          }}
           dark={dark}
         >
-          <form onSubmit={addGoal}>
+          <form onSubmit={editingGoalId !== null ? updateGoal : addGoal}>
             <div className="form-grid">
               <Field
                 label="Nome da meta"
@@ -2423,7 +2514,65 @@ export default function Home() {
 
               <button className="btn primary">
                 <Icon name="check" size={17} />
-                Criar meta
+                {editingGoalId !== null ? "Salvar alterações" : "Criar meta"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {goalAmountGoal && (
+        <Modal
+          title={`Adicionar dinheiro • ${goalAmountGoal.name}`}
+          onClose={closeGoalAmountModal}
+          dark={dark}
+        >
+          <form onSubmit={confirmAddToGoal}>
+            <div className="goal-amount-summary">
+              <div>
+                <span>Valor atual</span>
+                <strong>{money(goalAmountGoal.current)}</strong>
+              </div>
+              <div>
+                <span>Objetivo</span>
+                <strong>{money(goalAmountGoal.target)}</strong>
+              </div>
+              <div>
+                <span>Falta</span>
+                <strong>
+                  {money(Math.max(0, goalAmountGoal.target - goalAmountGoal.current))}
+                </strong>
+              </div>
+            </div>
+
+            <Field
+              label="Quanto deseja adicionar?"
+              value={goalAmount}
+              placeholder="Ex.: 500,00"
+              type="number"
+              onChange={setGoalAmount}
+              dark={dark}
+            />
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn secondary"
+                onClick={closeGoalAmountModal}
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="submit"
+                className="btn primary"
+                disabled={
+                  !Number.isFinite(Number(goalAmount.replace(",", "."))) ||
+                  Number(goalAmount.replace(",", ".")) <= 0
+                }
+              >
+                <Icon name="check" size={17} />
+                Adicionar à meta
               </button>
             </div>
           </form>
@@ -2559,20 +2708,33 @@ function NavItem({
   label,
   active,
   onClick,
+  hoverInfo,
 }: {
   icon: string;
   label: string;
   active: boolean;
   onClick: () => void;
+  hoverInfo?: string[];
 }) {
   return (
-    <button
-      className={active ? "nav-item active" : "nav-item"}
-      onClick={onClick}
-    >
-      <Icon name={icon} size={18} />
-      <span>{label}</span>
-    </button>
+    <div className="nav-item-wrap">
+      <button
+        className={active ? "nav-item active" : "nav-item"}
+        onClick={onClick}
+      >
+        <Icon name={icon} size={18} />
+        <span>{label}</span>
+      </button>
+
+      {hoverInfo && hoverInfo.length > 0 && (
+        <div className="nav-hover-info" role="tooltip">
+          <strong>{label}</strong>
+          {hoverInfo.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -3646,12 +3808,14 @@ function GoalsPage({
   goals,
   onNew,
   onAdd,
+  onEdit,
   onDelete,
 }: {
   dark: boolean;
   goals: Goal[];
   onNew: () => void;
   onAdd: (goal: Goal) => void;
+  onEdit: (goal: Goal) => void;
   onDelete: (id: number) => void;
 }) {
   return (
@@ -3688,12 +3852,25 @@ function GoalsPage({
                   {goal.icon}
                 </div>
 
-                <button
-                  className="delete-button"
-                  onClick={() => onDelete(goal.id)}
-                >
-                  <Icon name="trash" size={16} />
-                </button>
+                <div className="goal-card-actions">
+                  <button
+                    className="goal-edit-button"
+                    onClick={() => onEdit(goal)}
+                    aria-label={`Editar meta ${goal.name}`}
+                    title="Editar meta"
+                  >
+                    <Icon name="edit" size={15} />
+                  </button>
+
+                  <button
+                    className="delete-button"
+                    onClick={() => onDelete(goal.id)}
+                    aria-label={`Excluir meta ${goal.name}`}
+                    title="Excluir meta"
+                  >
+                    <Icon name="trash" size={16} />
+                  </button>
+                </div>
               </div>
 
               <h2>{goal.name}</h2>
@@ -4231,6 +4408,63 @@ button {
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+
+.nav-item-wrap {
+  position: relative;
+}
+
+.nav-item-wrap .nav-hover-info {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%) translateX(-4px);
+  width: 225px;
+  padding: 12px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, .18);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease, visibility .16s ease;
+  z-index: 70;
+}
+
+.nav-item-wrap .nav-hover-info::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  transform: translateY(-50%) rotate(45deg);
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-item-wrap .nav-hover-info strong {
+  font-size: 11px;
+  margin-bottom: 1px;
+}
+
+.nav-item-wrap .nav-hover-info span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.nav-item-wrap:hover .nav-hover-info,
+.nav-item-wrap:focus-within .nav-hover-info {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(-50%) translateX(0);
 }
 
 .nav-item {
@@ -5703,6 +5937,30 @@ button {
   font-size: 21px;
 }
 
+.goal-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.goal-edit-button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  transition: .18s ease;
+}
+
+.goal-edit-button:hover {
+  color: var(--blue);
+  background: rgba(79, 140, 255, .08);
+  border-color: rgba(79, 140, 255, .35);
+}
+
 .goal-card h2 {
   font-size: 14px;
   margin: 18px 0 13px;
@@ -6054,6 +6312,36 @@ button {
   color: var(--green);
 }
 
+.goal-amount-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 11px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.goal-amount-summary > div {
+  min-width: 0;
+}
+
+.goal-amount-summary span,
+.goal-amount-summary strong {
+  display: block;
+}
+
+.goal-amount-summary span {
+  color: var(--muted);
+  font-size: 9px;
+  margin-bottom: 4px;
+}
+
+.goal-amount-summary strong {
+  font-size: 11px;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -6128,6 +6416,10 @@ button {
 
   .sidebar.mobile-sidebar-open {
     transform: translateX(0);
+  }
+
+  .nav-hover-info {
+    display: none !important;
   }
 
   .mobile-menu-overlay {
@@ -6276,6 +6568,10 @@ button {
 @media (max-width: 580px) {
   .stats-grid,
   .stats-grid.three {
+    grid-template-columns: 1fr;
+  }
+
+  .goal-amount-summary {
     grid-template-columns: 1fr;
   }
 
