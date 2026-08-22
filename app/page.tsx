@@ -252,6 +252,52 @@ function dateBR(date: string) {
   return `${day}/${month}/${year}`;
 }
 
+const MONTH_MARKER = "__MEU_FINANCEIRO_MONTH_START__";
+
+function monthKeyFromDate(date: string) {
+  return date ? date.slice(0, 7) : "";
+}
+
+function isMonthMarker(transaction: Transaction) {
+  return transaction.description === MONTH_MARKER;
+}
+
+function currentCalendarMonthKey() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+}
+
+function resolveCurrentMonth(_items: Transaction[]) {
+  // O mês atual acompanha o calendário. Os meses anteriores continuam
+  // armazenados e podem ser consultados pelo seletor de mês.
+  return currentCalendarMonthKey();
+}
+
+function nextMonthKey(month: string) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const next = new Date(year, monthNumber, 1);
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthLabel(month: string) {
+  if (!month) return "";
+  const [year, monthNumber] = month.split("-").map(Number);
+  return new Date(year, monthNumber - 1, 1)
+    .toLocaleDateString("pt-BR", { month: "long", year: "numeric" })
+    .replace(/^./, (char) => char.toUpperCase());
+}
+
+function dateForMonth(month: string) {
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+  if (month === todayKey) {
+    return `${todayKey}-${String(today.getDate()).padStart(2, "0")}`;
+  }
+  return `${month}-01`;
+}
+
 function load<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
 
@@ -736,6 +782,12 @@ export default function Home() {
   const [purchases, setPurchases] =
     useState<CardPurchase[]>(initialPurchases);
   const [goals, setGoals] = useState<Goal[]>(initialGoals);
+  const [currentMonth, setCurrentMonth] = useState<string>(() =>
+    resolveCurrentMonth(initialTransactions)
+  );
+  const [viewMonth, setViewMonth] = useState<string>(() =>
+    resolveCurrentMonth(initialTransactions)
+  );
 
   const [modal, setModal] = useState<
     "transaction" | "bill" | "purchase" | "goal" | "card" | null
@@ -808,7 +860,11 @@ export default function Home() {
       if (data.theme === "dark" || data.theme === "light") {
         setTheme(data.theme);
       }
-      setTransactions((data.transactions as Transaction[]) || []);
+      const cloudTransactions = (data.transactions as Transaction[]) || [];
+      const loadedMonth = resolveCurrentMonth(cloudTransactions);
+      setCurrentMonth(loadedMonth);
+      setViewMonth(loadedMonth);
+      setTransactions(cloudTransactions);
       setBills((data.bills as Bill[]) || []);
       setCards((data.cards as Card[]) || []);
       setPurchases((data.purchases as CardPurchase[]) || []);
@@ -845,6 +901,9 @@ export default function Home() {
       return;
     }
 
+    const loadedMonth = resolveCurrentMonth(cloudPayload.transactions);
+    setCurrentMonth(loadedMonth);
+    setViewMonth(loadedMonth);
     setTheme(cloudPayload.theme);
     setTransactions(cloudPayload.transactions);
     setBills(cloudPayload.bills);
@@ -886,41 +945,99 @@ export default function Home() {
     };
   }, []);
 
- async function updateCloud(patch: Record<string, unknown>) {
-  if (!user?.id) return;
+  useEffect(() => {
+    if (typeof window === "undefined") return;
 
-  setSavingCloud(true);
-  setCloudError("");
+    // Impede o gesto de voltar do navegador/iPhone de sair do financeiro e
+    // retornar para a tela de login. O logout continua sendo o caminho
+    // explícito para sair da conta.
+    const currentUrl = window.location.href;
+    window.history.pushState({ meuFinanceiro: true }, "", currentUrl);
 
-  try {
-    const { error } = await supabase
-      .from("financeiro_user_data")
-      .upsert(
-        {
-          user_id: user.id,
-          ...patch,
-          updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: "user_id",
-        }
+    const keepInsideApp = () => {
+      window.history.pushState({ meuFinanceiro: true }, "", currentUrl);
+    };
+
+    window.addEventListener("popstate", keepInsideApp);
+
+    return () => {
+      window.removeEventListener("popstate", keepInsideApp);
+    };
+  }, []);
+
+  async function updateCloud(patch: Record<string, unknown>) {
+    if (!user?.id) return;
+
+    setSavingCloud(true);
+    setCloudError("");
+
+    try {
+      // Gravação robusta: não depende de upsert/onConflict nem da coluna
+      // updated_at. Primeiro verifica se a conta já possui uma linha.
+      const payload = {
+        theme:
+          (patch.theme as Theme | undefined) ??
+          theme,
+        transactions:
+          (patch.transactions as Transaction[] | undefined) ??
+          transactions,
+        bills:
+          (patch.bills as Bill[] | undefined) ??
+          bills,
+        cards:
+          (patch.cards as Card[] | undefined) ??
+          cards,
+        purchases:
+          (patch.purchases as CardPurchase[] | undefined) ??
+          purchases,
+        goals:
+          (patch.goals as Goal[] | undefined) ??
+          goals,
+      };
+
+      const { data: existing, error: findError } = await supabase
+        .from("finance_user_data")
+        .select("user_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (findError) throw findError;
+
+      if (existing) {
+        const { error } = await supabase
+          .from("finance_user_data")
+          .update(payload)
+          .eq("user_id", user.id);
+
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from("finance_user_data")
+          .insert({
+            user_id: user.id,
+            ...payload,
+          });
+
+        if (error) throw error;
+      }
+    } catch (error: any) {
+      console.error(
+        "Erro ao salvar dados:",
+        error?.message ?? error,
+        error?.details ?? "",
+        error?.hint ?? ""
       );
 
-    if (error) {
-      console.error("Erro ao salvar dados:", error);
-      setCloudError(
-        "Não foi possível salvar uma alteração. Verifique sua conexão."
-      );
+      const message =
+        error?.message ||
+        error?.details ||
+        "Não foi possível salvar a alteração.";
+
+      setCloudError(`Não foi possível salvar: ${message}`);
+    } finally {
+      setSavingCloud(false);
     }
-  } catch (error) {
-    console.error("Erro inesperado ao salvar:", error);
-    setCloudError(
-      "Não foi possível salvar uma alteração. Verifique sua conexão."
-    );
-  } finally {
-    setSavingCloud(false);
   }
-}
 
   useEffect(() => {
     if (cloudReady) updateCloud({ theme });
@@ -946,32 +1063,70 @@ export default function Home() {
     if (cloudReady) updateCloud({ goals });
   }, [goals, cloudReady]);
 
+  useEffect(() => {
+    const defaultDate = dateForMonth(currentMonth);
+    setTransactionForm((current) => ({ ...current, date: defaultDate }));
+    setBillForm((current) => ({ ...current, dueDate: defaultDate }));
+    setPurchaseForm((current) => ({ ...current, date: defaultDate }));
+  }, [currentMonth]);
+
   const dark = theme === "dark";
+
+  const availableMonths = useMemo(() => {
+    const months = new Set<string>();
+
+    transactions.forEach((item) => {
+      const month = monthKeyFromDate(item.date);
+      if (month) months.add(month);
+    });
+
+    bills.forEach((bill) => {
+      const month = monthKeyFromDate(bill.dueDate);
+      if (month) months.add(month);
+    });
+
+    if (currentMonth) months.add(currentMonth);
+
+    return Array.from(months).sort((a, b) => b.localeCompare(a));
+  }, [transactions, bills, currentMonth]);
+
+  const viewTransactions = useMemo(
+    () =>
+      transactions.filter(
+        (item) => !isMonthMarker(item) && monthKeyFromDate(item.date) === viewMonth
+      ),
+    [transactions, viewMonth]
+  );
+
+  const viewBills = useMemo(
+    () => bills.filter((bill) => monthKeyFromDate(bill.dueDate) === viewMonth),
+    [bills, viewMonth]
+  );
 
   const income = useMemo(
     () =>
-      transactions
+      viewTransactions
         .filter((item) => item.type === "income")
         .reduce((sum, item) => sum + item.amount, 0),
-    [transactions]
+    [viewTransactions]
   );
 
   const expenses = useMemo(
     () =>
-      transactions
+      viewTransactions
         .filter((item) => item.type === "expense")
         .reduce((sum, item) => sum + item.amount, 0),
-    [transactions]
+    [viewTransactions]
   );
 
   const balance = income - expenses + 1460;
 
   const pendingBills = useMemo(
     () =>
-      bills
+      viewBills
         .filter((bill) => !bill.paid)
         .reduce((sum, bill) => sum + bill.amount, 0),
-    [bills]
+    [viewBills]
   );
 
   const cardUsed = useMemo(
@@ -989,7 +1144,7 @@ export default function Home() {
     (purchase) => purchase.cardId === selectedCard
   );
 
-  const filteredTransactions = transactions
+  const filteredTransactions = viewTransactions
     .filter((transaction) =>
       `${transaction.description} ${transaction.category} ${transaction.account}`
         .toLowerCase()
@@ -1209,6 +1364,48 @@ export default function Home() {
           : item
       )
     );
+  }
+
+  function closeCurrentMonth() {
+    const nextMonth = nextMonthKey(currentMonth);
+    const currentLabel = monthLabel(currentMonth);
+    const nextLabel = monthLabel(nextMonth);
+
+    const confirmed = window.confirm(
+      `Fechar ${currentLabel} e começar ${nextLabel} zerado?
+
+` +
+        `Os lançamentos de ${currentLabel} continuarão salvos no histórico.`
+    );
+
+    if (!confirmed) return;
+
+    setTransactions((current) => {
+      const alreadyStarted = current.some(
+        (item) => isMonthMarker(item) && monthKeyFromDate(item.date) === nextMonth
+      );
+
+      if (alreadyStarted) return current;
+
+      return [
+        ...current,
+        {
+          id: Date.now(),
+          description: MONTH_MARKER,
+          category: "__system__",
+          account: "__system__",
+          date: `${nextMonth}-01`,
+          amount: 0,
+          type: "income",
+          color: "month-marker",
+        },
+      ];
+    });
+
+    setCurrentMonth(nextMonth);
+    setViewMonth(nextMonth);
+    setSearch("");
+    setPage("dashboard");
   }
 
   const pageTitle: Record<Page, string> = {
@@ -1475,8 +1672,8 @@ export default function Home() {
               expenses={expenses}
               balance={balance}
               pendingBills={pendingBills}
-              transactions={transactions}
-              bills={bills}
+              transactions={viewTransactions}
+              bills={viewBills}
               cards={cards}
               purchases={purchases}
               goals={goals}
@@ -1486,6 +1683,10 @@ export default function Home() {
               onBills={() => navigate("bills")}
               onCards={() => navigate("cards")}
               onGoals={() => navigate("goals")}
+              currentMonth={currentMonth}
+              selectedMonth={viewMonth}
+              availableMonths={availableMonths}
+              onMonthChange={setViewMonth}
             />
           )}
 
@@ -1503,7 +1704,7 @@ export default function Home() {
           {page === "bills" && (
             <BillsPage
               dark={dark}
-              bills={bills}
+              bills={viewBills}
               onNew={() => setModal("bill")}
               onToggle={toggleBill}
               onDelete={deleteBill}
@@ -1542,7 +1743,7 @@ export default function Home() {
               dark={dark}
               income={income}
               expenses={expenses}
-              transactions={transactions}
+              transactions={viewTransactions}
             />
           )}
 
@@ -1551,6 +1752,8 @@ export default function Home() {
               dark={dark}
               theme={theme}
               setTheme={setTheme}
+              currentMonth={currentMonth}
+              onCloseMonth={closeCurrentMonth}
             />
           )}
         </div>
@@ -2188,6 +2391,10 @@ function Dashboard({
   onBills,
   onCards,
   onGoals,
+  currentMonth,
+  selectedMonth,
+  availableMonths,
+  onMonthChange,
 }: {
   dark: boolean;
   income: number;
@@ -2205,6 +2412,10 @@ function Dashboard({
   onBills: () => void;
   onCards: () => void;
   onGoals: () => void;
+  currentMonth: string;
+  selectedMonth: string;
+  availableMonths: string[];
+  onMonthChange: (month: string) => void;
 }) {
   const economy =
     income > 0
@@ -2215,16 +2426,24 @@ function Dashboard({
     <>
       <div className="page-heading">
         <div>
-          <p className="eyebrow">VISÃO GERAL / AGOSTO 2026</p>
+          <p className="eyebrow">VISÃO GERAL / {monthLabel(selectedMonth).toUpperCase()}</p>
           <h1>Olá, {userName}! 👋</h1>
           <p>Aqui está o resumo das suas finanças.</p>
         </div>
 
         <div className="heading-actions">
-          <button className="period">
-            Agosto 2026
-            <span>⌄</span>
-          </button>
+          <select
+            className="period period-select"
+            value={selectedMonth}
+            onChange={(event) => onMonthChange(event.target.value)}
+            aria-label="Selecionar mês"
+          >
+            {availableMonths.map((month) => (
+              <option key={month} value={month}>
+                {monthLabel(month)}{month === currentMonth ? " • atual" : ""}
+              </option>
+            ))}
+          </select>
 
           <button className="btn primary" onClick={onNew}>
             <Icon name="plus" size={17} />
@@ -3455,10 +3674,14 @@ function SettingsPage({
   dark,
   theme,
   setTheme,
+  currentMonth,
+  onCloseMonth,
 }: {
   dark: boolean;
   theme: Theme;
   setTheme: (theme: Theme) => void;
+  currentMonth: string;
+  onCloseMonth: () => void;
 }) {
   return (
     <>
@@ -3519,6 +3742,23 @@ function SettingsPage({
 
         <div className="setting-row">
           <div className="setting-icon">
+            <Icon name="chart" size={18} />
+          </div>
+
+          <div className="setting-info">
+            <strong>Fechamento mensal</strong>
+            <span>
+              Feche {monthLabel(currentMonth)} e comece o próximo mês zerado. O histórico continua salvo.
+            </span>
+          </div>
+
+          <button type="button" className="btn secondary month-close-button" onClick={onCloseMonth}>
+            Fechar mês
+          </button>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-icon">
             <Icon name="bell" size={18} />
           </div>
 
@@ -3565,6 +3805,8 @@ body {
 }
 
 body {
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
   font-family:
     Inter,
     ui-sans-serif,
@@ -3586,6 +3828,8 @@ button {
 }
 
 .app {
+  touch-action: pan-y;
+  overscroll-behavior-x: none;
   --bg: #f5f7fb;
   --sidebar: #ffffff;
   --panel: #ffffff;
@@ -3980,6 +4224,16 @@ button {
 .period span {
   margin-left: 14px;
   color: var(--muted);
+}
+
+.period-select {
+  min-width: 145px;
+  outline: none;
+  cursor: pointer;
+}
+
+.month-close-button {
+  white-space: nowrap;
 }
 
 .btn {
@@ -5314,6 +5568,31 @@ button {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 21px;
+}
+
+/* Pequeno aumento de legibilidade somente em telas de PC */
+@media (min-width: 851px) {
+  .panel-header h2 { font-size: 15px; }
+  .panel-header p { font-size: 11px; }
+  .panel-action { font-size: 11px; }
+  .legend { font-size: 11px; }
+  .chart-days { font-size: 10px; }
+  .category-line { font-size: 11px; }
+  .category-line strong { font-size: 11px; }
+  .category-line small { font-size: 10px; }
+  .text-button { font-size: 11px; }
+  .transaction-info strong { font-size: 12px; }
+  .transaction-info span,
+  .transaction-date { font-size: 10px; }
+  .amount { font-size: 12px; }
+  .bill-info strong { font-size: 12px; }
+  .bill-info span { font-size: 10px; }
+  .bill-value strong { font-size: 12px; }
+  .bill-value span,
+  .status { font-size: 10px; }
+  .panel-total { font-size: 11px; }
+  .goal-mini-top { font-size: 11px; }
+  .goal-mini-bottom { font-size: 10px; }
 }
 
 /* RESPONSIVO */
