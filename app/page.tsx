@@ -51,6 +51,8 @@ type Card = {
   limit: number;
   closingDay: number;
   dueDay: number;
+  invoicePaidMonth?: string;
+  invoicePaidDate?: string;
 };
 
 type CardPurchase = {
@@ -246,6 +248,26 @@ function money(value: number) {
   });
 }
 
+function currentCalendarMonthKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function invoiceStatusForCard(card: Card, now = new Date()) {
+  const monthKey = currentCalendarMonthKey(now);
+
+  // If the user has already paid this month's invoice, keep it paid.
+  if (card.invoicePaidMonth === monthKey) {
+    return "paid" as const;
+  }
+
+  // Before the due date there is no "pending" warning.
+  // On/after the due date it becomes pending until paid.
+  const today = now.getDate();
+  const dueDay = Math.min(Math.max(card.dueDay || 1, 1), 31);
+
+  return today >= dueDay ? ("pending" as const) : ("upcoming" as const);
+}
+
 function dateBR(date: string) {
   if (!date) return "";
   const [year, month, day] = date.split("-");
@@ -260,13 +282,6 @@ function monthKeyFromDate(date: string) {
 
 function isMonthMarker(transaction: Transaction) {
   return transaction.description === MONTH_MARKER;
-}
-
-function currentCalendarMonthKey() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
 }
 
 function resolveCurrentMonth(_items: Transaction[]) {
@@ -843,6 +858,7 @@ export default function Home() {
     closingDay: "2",
     dueDay: "10",
   });
+  const [editingCardId, setEditingCardId] = useState<number | null>(null);
 
   const [search, setSearch] = useState("");
   const [cloudReady, setCloudReady] = useState(false);
@@ -1320,12 +1336,87 @@ export default function Home() {
     });
   }
 
+  function startEditCard(card: Card) {
+    setEditingCardId(card.id);
+    setCardForm({
+      name: card.name,
+      brand: card.brand,
+      last4: card.last4,
+      limit: String(card.limit),
+      closingDay: String(card.closingDay || 1),
+      dueDay: String(card.dueDay || 1),
+    });
+    setModal("card");
+  }
+
+  function updateCard(e: FormEvent) {
+    e.preventDefault();
+
+    const limit = Number(cardForm.limit.replace(",", "."));
+    const closingDay = Number(cardForm.closingDay);
+    const dueDay = Number(cardForm.dueDay);
+
+    if (
+      editingCardId === null ||
+      !cardForm.name ||
+      !limit ||
+      !Number.isInteger(closingDay) ||
+      !Number.isInteger(dueDay) ||
+      closingDay < 1 ||
+      closingDay > 31 ||
+      dueDay < 1 ||
+      dueDay > 31
+    ) {
+      return;
+    }
+
+    setCards((current) =>
+      current.map((card) =>
+        card.id === editingCardId
+          ? {
+              ...card,
+              name: cardForm.name,
+              brand: cardForm.brand,
+              last4: cardForm.last4,
+              limit,
+              closingDay,
+              dueDay,
+            }
+          : card
+      )
+    );
+
+    setEditingCardId(null);
+    setModal(null);
+    setCardForm({
+      name: "",
+      brand: "VISA",
+      last4: "",
+      limit: "",
+      closingDay: "2",
+      dueDay: "10",
+    });
+  }
+
   function addCard(e: FormEvent) {
     e.preventDefault();
 
     const limit = Number(cardForm.limit.replace(",", "."));
+    const closingDay = Number(cardForm.closingDay);
+    const dueDay = Number(cardForm.dueDay);
 
-    if (!cardForm.name || !limit) return;
+    if (
+      !cardForm.name ||
+      !limit ||
+      !Number.isInteger(closingDay) ||
+      !Number.isInteger(dueDay) ||
+      closingDay < 1 ||
+      closingDay > 31 ||
+      dueDay < 1 ||
+      dueDay > 31
+    ) {
+      return;
+    }
 
     const card: Card = {
       id: Date.now(),
@@ -1333,8 +1424,8 @@ export default function Home() {
       brand: cardForm.brand,
       last4: cardForm.last4,
       limit,
-      closingDay: Number(cardForm.closingDay),
-      dueDay: Number(cardForm.dueDay),
+      closingDay,
+      dueDay,
     };
 
     setCards((current) => [...current, card]);
@@ -1355,6 +1446,31 @@ export default function Home() {
       current.map((bill) =>
         bill.id === id ? { ...bill, paid: !bill.paid } : bill
       )
+    );
+  }
+
+  function toggleCardInvoicePaid(cardId: number) {
+    const month = currentCalendarMonthKey();
+    const paidDate = new Date().toISOString().slice(0, 10);
+
+    setCards((current) =>
+      current.map((card) => {
+        if (card.id !== cardId) return card;
+
+        const alreadyPaid = card.invoicePaidMonth === month;
+
+        return alreadyPaid
+          ? {
+              ...card,
+              invoicePaidMonth: undefined,
+              invoicePaidDate: undefined,
+            }
+          : {
+              ...card,
+              invoicePaidMonth: month,
+              invoicePaidDate: paidDate,
+            };
+      })
     );
   }
 
@@ -1785,6 +1901,8 @@ export default function Home() {
               onNewCard={() => setModal("card")}
               onNewPurchase={() => setModal("purchase")}
               onDeletePurchase={deletePurchase}
+              onToggleInvoicePaid={toggleCardInvoicePaid}
+              onEditCard={startEditCard}
             />
           )}
 
@@ -2314,11 +2432,14 @@ export default function Home() {
 
       {modal === "card" && (
         <Modal
-          title="Adicionar cartão"
-          onClose={() => setModal(null)}
+          title={editingCardId !== null ? "Editar cartão" : "Adicionar cartão"}
+          onClose={() => {
+            setEditingCardId(null);
+            setModal(null);
+          }}
           dark={dark}
         >
-          <form onSubmit={addCard}>
+          <form onSubmit={editingCardId !== null ? updateCard : addCard}>
             <div className="form-grid">
               <Field
                 label="Nome do cartão"
@@ -2373,27 +2494,35 @@ export default function Home() {
                 dark={dark}
               />
 
+              <div className="card-day-fields">
+                <span className="card-day-help">
+                  Informe os dias do seu cartão. A fatura só fica amarela como pendente a partir do vencimento; antes disso fica apenas como "a vencer".
+                </span>
+              </div>
+
               <Field
-                label="Fechamento"
+                label="Dia de fechamento"
                 value={cardForm.closingDay}
+                placeholder="Ex.: 2"
                 type="number"
                 onChange={(value) =>
                   setCardForm((current) => ({
                     ...current,
-                    closingDay: value,
+                    closingDay: value.replace(/\\D/g, "").slice(0, 2),
                   }))
                 }
                 dark={dark}
               />
 
               <Field
-                label="Vencimento"
+                label="Dia de vencimento"
                 value={cardForm.dueDay}
+                placeholder="Ex.: 10"
                 type="number"
                 onChange={(value) =>
                   setCardForm((current) => ({
                     ...current,
-                    dueDay: value,
+                    dueDay: value.replace(/\\D/g, "").slice(0, 2),
                   }))
                 }
                 dark={dark}
@@ -2411,7 +2540,7 @@ export default function Home() {
 
               <button className="btn primary">
                 <Icon name="check" size={17} />
-                Adicionar cartão
+                {editingCardId !== null ? "Salvar alterações" : "Adicionar cartão"}
               </button>
             </div>
           </form>
@@ -3194,6 +3323,8 @@ function CardsPage({
   onNewCard,
   onNewPurchase,
   onDeletePurchase,
+  onToggleInvoicePaid,
+  onEditCard,
 }: {
   dark: boolean;
   cards: Card[];
@@ -3203,8 +3334,16 @@ function CardsPage({
   onNewCard: () => void;
   onNewPurchase: () => void;
   onDeletePurchase: (id: number) => void;
+  onToggleInvoicePaid: (cardId: number) => void;
+  onEditCard: (card: Card) => void;
 }) {
   const card = cards.find((item) => item.id === selectedCard);
+  const invoiceMonth = currentCalendarMonthKey();
+  const invoiceStatus = card
+    ? invoiceStatusForCard(card)
+    : ("upcoming" as const);
+  const invoicePaid = invoiceStatus === "paid";
+  const invoicePending = invoiceStatus === "pending";
 
   const cardPurchases = purchases.filter(
     (purchase) => purchase.cardId === selectedCard
@@ -3272,18 +3411,42 @@ function CardsPage({
                   : 0;
 
               return (
-                <button
+                <div
                   key={item.id}
                   className={
                     selectedCard === item.id
                       ? "credit-card selected"
                       : "credit-card"
                   }
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelectedCard(item.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedCard(item.id);
+                    }
+                  }}
                 >
                   <div className="credit-card-top">
                     <span>{item.name}</span>
                     <strong>{item.brand}</strong>
+                  </div>
+
+                  <div className="card-edit-row">
+                    <button
+                      type="button"
+                      className="card-edit-button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onEditCard(item);
+                      }}
+                      aria-label={`Editar ${item.name}`}
+                      title="Editar cartão"
+                    >
+                      <Icon name="edit" size={15} />
+                      Editar
+                    </button>
                   </div>
 
                   <div className="card-number">
@@ -3312,7 +3475,8 @@ function CardsPage({
                       )}
                     </span>
                   </div>
-                </button>
+
+                </div>
               );
             })}
           </div>
@@ -3332,6 +3496,44 @@ function CardsPage({
               <span>Valor da fatura</span>
               <strong>{money(used)}</strong>
             </div>
+          </div>
+
+          <div
+            className={`invoice-status ${
+              invoicePaid ? "paid" : invoicePending ? "pending" : "upcoming"
+            }`}
+          >
+            <div>
+              <span>Status da fatura</span>
+              <strong>
+                {invoicePaid
+                  ? "✓ Fatura paga"
+                  : invoicePending
+                    ? "Fatura pendente"
+                    : "Fatura a vencer"}
+              </strong>
+
+              {invoicePaid && card?.invoicePaidDate && (
+                <small>Pago em {dateBR(card.invoicePaidDate)}</small>
+              )}
+
+              {!invoicePaid && !invoicePending && (
+                <small>
+                  Fica pendente a partir do dia {card?.dueDay}.
+                </small>
+              )}
+            </div>
+
+            <button
+              type="button"
+              className={`invoice-paid-button ${
+                invoicePaid ? "paid-button" : ""
+              }`}
+              onClick={() => card && onToggleInvoicePaid(card.id)}
+            >
+              <Icon name="check" size={16} />
+              {invoicePaid ? "Marcar como pendente" : "Marcar como paga"}
+            </button>
           </div>
 
           <div className="invoice-progress">
@@ -5110,7 +5312,43 @@ button {
   transition: .18s ease;
 }
 
-.credit-card:hover,
+.credit-card:hover {
+  border-color: rgba(32, 201, 120, .45);
+}
+
+.card-edit-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 30px;
+  margin-top: 4px;
+  margin-bottom: 2px;
+}
+
+.card-edit-button {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(5, 14, 26, .72);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.card-edit-button:hover {
+  color: var(--text);
+  border-color: var(--green);
+}
+
+.credit-card {
+  position: relative;
+}
+
 .credit-card.selected {
   border-color: rgba(32, 201, 120, .7);
   transform: translateY(-2px);
@@ -5210,6 +5448,114 @@ button {
   color: var(--green);
   font-size: 19px;
   margin-top: 4px;
+}
+
+.invoice-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  margin: -8px 0 20px;
+  border: 1px solid rgba(245, 158, 11, .18);
+  border-radius: 10px;
+  background: rgba(245, 158, 11, .07);
+}
+
+.invoice-status > div {
+  min-width: 0;
+}
+
+.invoice-status span,
+.invoice-status strong,
+.invoice-status small {
+  display: block;
+}
+
+.invoice-status span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.invoice-status strong {
+  margin-top: 3px;
+  font-size: 11px;
+  color: #f59e0b;
+}
+
+.invoice-status small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.invoice-status.paid {
+  border-color: rgba(32, 201, 120, .22);
+  background: rgba(32, 201, 120, .07);
+}
+
+.invoice-status.paid strong {
+  color: var(--green);
+}
+
+.invoice-status.pending {
+  border-color: rgba(245, 158, 11, .28);
+  background: rgba(245, 158, 11, .08);
+}
+
+.invoice-status.pending strong {
+  color: #f59e0b;
+}
+
+.invoice-status.upcoming {
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+
+.invoice-status.upcoming strong {
+  color: var(--text);
+}
+
+.invoice-paid-button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid rgba(32, 201, 120, .3);
+  border-radius: 9px;
+  background: rgba(32, 201, 120, .12);
+  color: var(--green);
+  font: inherit;
+  font-size: 9px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: .18s ease;
+}
+
+.invoice-paid-button:hover {
+  background: rgba(32, 201, 120, .2);
+  transform: translateY(-1px);
+}
+
+.invoice-paid-button.paid-button {
+  border-color: var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.card-day-fields {
+  grid-column: 1 / -1;
+  margin: -2px 0 -2px;
+}
+
+.card-day-help {
+  display: block;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
 }
 
 .invoice-progress-top,
@@ -5943,6 +6289,15 @@ button {
 
   .invoice-value {
     text-align: left;
+  }
+
+  .invoice-status {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .invoice-paid-button {
+    width: 100%;
   }
 
   .invoice-info-grid {
