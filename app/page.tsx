@@ -419,6 +419,11 @@ function Icon({
         <path d="m20 20-4-4" />
       </>
     ),
+    menu: (
+      <>
+        <path d="M4 6h16M4 12h16M4 18h16" />
+      </>
+    ),
     bell: (
       <>
         <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
@@ -772,9 +777,11 @@ function Field({
 export default function Home() {
   const [theme, setTheme] = useState<Theme>("dark");
   const [page, setPage] = useState<Page>("dashboard");
+  const [pageHistory, setPageHistory] = useState<Page[]>(["dashboard"]);
   const [user, setUser] = useState<any>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [showAccountDetails, setShowAccountDetails] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [transactions, setTransactions] =
     useState<Transaction[]>(initialTransactions);
   const [bills, setBills] = useState<Bill[]>(initialBills);
@@ -948,14 +955,19 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    // Impede o gesto de voltar do navegador/iPhone de sair do financeiro e
-    // retornar para a tela de login. O logout continua sendo o caminho
-    // explícito para sair da conta.
+    // O login não pode voltar a aparecer quando o usuário usa o gesto
+    // de voltar do iPhone/Android. Substituímos a entrada atual e
+    // mantemos uma entrada do próprio financeiro na pilha do navegador.
+    // Assim, o gesto de voltar permanece dentro do app.
     const currentUrl = window.location.href;
-    window.history.pushState({ meuFinanceiro: true }, "", currentUrl);
+    const appState = { meuFinanceiro: true, screen: "app" };
+    window.history.replaceState(appState, "", currentUrl);
+    window.history.pushState(appState, "", currentUrl);
 
     const keepInsideApp = () => {
-      window.history.pushState({ meuFinanceiro: true }, "", currentUrl);
+      // O app não usa o histórico do navegador para trocar de telas.
+      // Portanto, qualquer gesto de voltar deve permanecer dentro do app.
+      window.history.pushState(appState, "", currentUrl);
     };
 
     window.addEventListener("popstate", keepInsideApp);
@@ -1153,7 +1165,30 @@ export default function Home() {
     .sort((a, b) => b.date.localeCompare(a.date));
 
   function navigate(nextPage: Page) {
+    if (nextPage === page) {
+      setMobileMenuOpen(false);
+      return;
+    }
+
+    setPageHistory((current) => [...current, nextPage]);
     setPage(nextPage);
+    setMobileMenuOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function goBackInApp() {
+    setPageHistory((current) => {
+      if (current.length <= 1) {
+        setPage("dashboard");
+        return ["dashboard"];
+      }
+
+      const nextHistory = current.slice(0, -1);
+      setPage(nextHistory[nextHistory.length - 1]);
+      setMobileMenuOpen(false);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return nextHistory;
+    });
   }
 
   function addTransaction(e: FormEvent) {
@@ -1452,7 +1487,15 @@ export default function Home() {
 
   return (
     <main className={dark ? "app dark" : "app"}>
-      <aside className="sidebar">
+      {mobileMenuOpen && (
+        <div
+          className="mobile-menu-overlay"
+          onClick={() => setMobileMenuOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside className={mobileMenuOpen ? "sidebar mobile-sidebar-open" : "sidebar"}>
         <div className="brand">
           <div className="brand-logo">
             <Icon name="wallet" size={20} />
@@ -1594,6 +1637,27 @@ export default function Home() {
       <section className="content">
         <header className="topbar">
           <div className="mobile-brand">
+            {page !== "dashboard" && (
+              <button
+                type="button"
+                className="mobile-back-button"
+                onClick={goBackInApp}
+                aria-label="Voltar"
+              >
+                <span aria-hidden="true">←</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              className="mobile-menu-button"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="Abrir menu"
+              aria-expanded={mobileMenuOpen}
+            >
+              <Icon name="menu" size={20} />
+            </button>
+
             <div className="brand-logo">
               <Icon name="wallet" size={18} />
             </div>
@@ -1758,6 +1822,53 @@ export default function Home() {
           )}
         </div>
       </section>
+
+      <nav className="mobile-bottom-nav" aria-label="Navegação principal no celular">
+        <button
+          type="button"
+          className={page === "dashboard" ? "active" : ""}
+          onClick={() => navigate("dashboard")}
+        >
+          <Icon name="dashboard" size={19} />
+          <span>Dashboard</span>
+        </button>
+
+        <button
+          type="button"
+          className={page === "transactions" ? "active" : ""}
+          onClick={() => navigate("transactions")}
+        >
+          <Icon name="transactions" size={19} />
+          <span>Lançamentos</span>
+        </button>
+
+        <button
+          type="button"
+          className={page === "bills" ? "active" : ""}
+          onClick={() => navigate("bills")}
+        >
+          <Icon name="bills" size={19} />
+          <span>Contas</span>
+        </button>
+
+        <button
+          type="button"
+          className={page === "cards" ? "active" : ""}
+          onClick={() => navigate("cards")}
+        >
+          <Icon name="card" size={19} />
+          <span>Cartões</span>
+        </button>
+
+        <button
+          type="button"
+          className={page === "goals" ? "active" : ""}
+          onClick={() => navigate("goals")}
+        >
+          <Icon name="target" size={19} />
+          <span>Metas</span>
+        </button>
+      </nav>
 
       {modal === "transaction" && (
         <Modal
@@ -4179,6 +4290,40 @@ button {
   display: none;
 }
 
+.mobile-back-button {
+  display: none;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  place-items: center;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.mobile-menu-button {
+  display: none;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  place-items: center;
+}
+
+.mobile-menu-overlay {
+  display: none;
+}
+
+.mobile-bottom-nav {
+  display: none;
+}
+
 .page {
   max-width: 1500px;
   margin: 0 auto;
@@ -5621,14 +5766,102 @@ button {
 
 @media (max-width: 850px) {
   .sidebar {
-    display: none;
+    display: flex;
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: min(280px, 84vw);
+    height: 100dvh;
+    min-height: 100dvh;
+    z-index: 100;
+    transform: translateX(-105%);
+    transition: transform .22s ease;
+    box-shadow: 18px 0 45px rgba(0,0,0,.22);
+  }
+
+  .sidebar.mobile-sidebar-open {
+    transform: translateX(0);
+  }
+
+  .mobile-menu-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    background: rgba(0,0,0,.48);
+    backdrop-filter: blur(2px);
   }
 
   .mobile-brand {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 11px;
+    font-size: 12px;
+    min-width: 0;
+  }
+
+  .mobile-brand strong {
+    white-space: nowrap;
+  }
+
+  .mobile-menu-button,
+  .mobile-back-button {
+    display: grid;
+  }
+
+  .mobile-bottom-nav {
+    position: fixed;
+    left: 10px;
+    right: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    height: 66px;
+    z-index: 80;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 2px;
+    padding: 7px 5px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--panel) 94%, transparent);
+    box-shadow: 0 14px 35px rgba(0,0,0,.22);
+    backdrop-filter: blur(18px);
+  }
+
+  .mobile-bottom-nav button {
+    min-width: 0;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 4px 2px;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .mobile-bottom-nav button.active {
+    background: var(--hover);
+    color: #20d77f;
+  }
+
+  .mobile-bottom-nav button span {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 9px;
+    font-weight: 700;
+  }
+
+  .content {
+    padding-bottom: 88px;
   }
 
   .breadcrumb {
