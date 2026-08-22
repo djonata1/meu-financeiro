@@ -886,24 +886,41 @@ export default function Home() {
     };
   }, []);
 
-  async function updateCloud(patch: Record<string, unknown>) {
-    if (!user || !cloudReady) return;
+ async function updateCloud(patch: Record<string, unknown>) {
+  if (!user?.id) return;
 
-    setSavingCloud(true);
-    setCloudError("");
+  setSavingCloud(true);
+  setCloudError("");
 
+  try {
     const { error } = await supabase
-      .from("finance_user_data")
-      .update({ ...patch, updated_at: new Date().toISOString() })
-      .eq("user_id", user.id);
+      .from("financeiro_user_data")
+      .upsert(
+        {
+          user_id: user.id,
+          ...patch,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "user_id",
+        }
+      );
 
     if (error) {
-      console.error(error);
-      setCloudError("Não foi possível salvar uma alteração. Verifique sua conexão.");
+      console.error("Erro ao salvar dados:", error);
+      setCloudError(
+        "Não foi possível salvar uma alteração. Verifique sua conexão."
+      );
     }
-
+  } catch (error) {
+    console.error("Erro inesperado ao salvar:", error);
+    setCloudError(
+      "Não foi possível salvar uma alteração. Verifique sua conexão."
+    );
+  } finally {
     setSavingCloud(false);
   }
+}
 
   useEffect(() => {
     if (cloudReady) updateCloud({ theme });

@@ -11,28 +11,36 @@ export default function LoginPage() {
   const [nome, setNome] = useState("");
 
   const [loading, setLoading] = useState(false);
-  const [reenviando, setReenviando] = useState(false);
   const [recuperando, setRecuperando] = useState(false);
 
   const [mensagem, setMensagem] = useState("");
-  const [mostrarReenviar, setMostrarReenviar] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
 
     setLoading(true);
     setMensagem("");
-    setMostrarReenviar(false);
 
     try {
+      // =========================
+      // CADASTRO
+      // =========================
       if (modo === "cadastro") {
         if (!nome.trim()) {
           setMensagem("Digite seu nome.");
+          setLoading(false);
+          return;
+        }
+
+        if (!email.trim()) {
+          setMensagem("Digite seu e-mail.");
+          setLoading(false);
           return;
         }
 
         if (senha.length < 6) {
           setMensagem("A senha precisa ter pelo menos 6 caracteres.");
+          setLoading(false);
           return;
         }
 
@@ -40,110 +48,117 @@ export default function LoginPage() {
           email: email.trim(),
           password: senha,
           options: {
-            emailRedirectTo: `${window.location.origin}/auth/callback`,
             data: {
               nome: nome.trim(),
+              name: nome.trim(),
             },
           },
         });
 
         if (error) {
+          console.error("Erro no cadastro:", error);
+
           setMensagem(error.message);
+          setLoading(false);
           return;
         }
 
-        if (data.user) {
-          setMensagem(
-            "Conta criada! Enviamos um e-mail para você. Confirme seu endereço para finalizar o cadastro."
-          );
+        console.log("Resultado do cadastro:", data);
 
-          setMostrarReenviar(true);
-        }
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password: senha,
-        });
+        // ==========================================
+        // CONTA CRIADA
+        // ==========================================
 
-        if (error) {
-          setMensagem(
-            "E-mail ou senha incorretos. Se esqueceu sua senha, use a opção abaixo."
-          );
-          return;
-        }
+        // Mantém o e-mail para facilitar o login.
+        const emailCadastrado = email.trim();
 
-        window.location.href = "/";
+        // Limpa a senha por segurança.
+        setSenha("");
+
+        // Volta para a tela de login.
+        setModo("login");
+
+        // Mostra a confirmação.
+        setMensagem(
+          "Conta criada com sucesso! Agora entre com seu e-mail e senha."
+        );
+
+        setEmail(emailCadastrado);
+
+        setLoading(false);
+        return;
       }
-    } catch (error) {
-      console.error(error);
 
-      setMensagem(
-        "Ocorreu um erro. Verifique sua conexão e tente novamente."
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
+      // =========================
+      // LOGIN
+      // =========================
 
-  async function reenviarConfirmacao() {
-    const emailLimpo = email.trim();
+      const emailLimpo = email.trim();
 
-    if (!emailLimpo) {
-      setMensagem("Digite seu e-mail primeiro.");
-      return;
-    }
+      if (!emailLimpo) {
+        setMensagem("Digite seu e-mail.");
+        setLoading(false);
+        return;
+      }
 
-    setReenviando(true);
-    setMensagem("");
+      if (!senha) {
+        setMensagem("Digite sua senha.");
+        setLoading(false);
+        return;
+      }
 
-    try {
-      const { error } = await supabase.auth.resend({
-        type: "signup",
+      const { data, error } = await supabase.auth.signInWithPassword({
         email: emailLimpo,
-        options: {
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
-        },
+        password: senha,
       });
 
       if (error) {
+        console.error("Erro no login:", error);
+
         const msg = error.message.toLowerCase();
 
         if (
-          msg.includes("already confirmed") ||
-          msg.includes("already been confirmed")
+          msg.includes("invalid login credentials") ||
+          msg.includes("invalid credentials")
         ) {
           setMensagem(
-            "Esse e-mail já foi confirmado. Agora é só entrar com seu e-mail e senha."
+            "E-mail ou senha incorretos. Confira os dados e tente novamente."
           );
-
-          setMostrarReenviar(false);
-        } else if (
-          msg.includes("rate limit") ||
-          msg.includes("too many")
-        ) {
+        } else if (msg.includes("email not confirmed")) {
           setMensagem(
-            "Você atingiu o limite de envio de e-mails. Aguarde um pouco e tente novamente."
+            "Este e-mail ainda não foi confirmado no Supabase."
           );
         } else {
           setMensagem(error.message);
         }
 
+        setLoading(false);
         return;
       }
 
-      setMensagem(
-        "Novo e-mail de confirmação enviado! Verifique sua caixa de entrada e a pasta de spam."
-      );
+      console.log("Login realizado:", data);
+
+      if (data.session) {
+        window.location.href = "/";
+        return;
+      }
+
+      setMensagem("Não foi possível iniciar sua sessão.");
+      setLoading(false);
     } catch (error) {
-      console.error(error);
+      console.error("Erro inesperado:", error);
 
       setMensagem(
-        "Não foi possível reenviar agora. Aguarde alguns segundos e tente novamente."
+        "Ocorreu um erro. Verifique sua conexão e tente novamente."
       );
-    } finally {
-      setReenviando(false);
+
+      setLoading(false);
     }
   }
+
+  // =========================
+  // RECUPERAÇÃO DE SENHA
+  // =========================
 
   async function recuperarSenha() {
     const emailLimpo = email.trim();
@@ -165,6 +180,8 @@ export default function LoginPage() {
       );
 
       if (error) {
+        console.error("Erro ao recuperar senha:", error);
+
         const msg = error.message.toLowerCase();
 
         if (
@@ -180,6 +197,7 @@ export default function LoginPage() {
           );
         }
 
+        setRecuperando(false);
         return;
       }
 
@@ -197,10 +215,13 @@ export default function LoginPage() {
     }
   }
 
+  // =========================
+  // TROCAR LOGIN / CADASTRO
+  // =========================
+
   function trocarModo() {
     setModo(modo === "login" ? "cadastro" : "login");
     setMensagem("");
-    setMostrarReenviar(false);
   }
 
   return (
@@ -226,6 +247,8 @@ export default function LoginPage() {
           boxShadow: "0 25px 80px rgba(0,0,0,.35)",
         }}
       >
+        {/* CABEÇALHO */}
+
         <div
           style={{
             textAlign: "center",
@@ -272,7 +295,11 @@ export default function LoginPage() {
           </p>
         </div>
 
+        {/* FORMULÁRIO */}
+
         <form onSubmit={handleSubmit}>
+          {/* NOME */}
+
           {modo === "cadastro" && (
             <div style={{ marginBottom: "16px" }}>
               <label>Nome</label>
@@ -287,6 +314,8 @@ export default function LoginPage() {
             </div>
           )}
 
+          {/* E-MAIL */}
+
           <div style={{ marginBottom: "16px" }}>
             <label>E-mail</label>
 
@@ -299,6 +328,8 @@ export default function LoginPage() {
               style={inputStyle}
             />
           </div>
+
+          {/* SENHA */}
 
           <div style={{ marginBottom: "8px" }}>
             <label>Senha</label>
@@ -313,6 +344,8 @@ export default function LoginPage() {
               style={inputStyle}
             />
           </div>
+
+          {/* ESQUECI A SENHA */}
 
           {modo === "login" && (
             <div
@@ -331,7 +364,9 @@ export default function LoginPage() {
                   color: "#20e58a",
                   fontSize: "13px",
                   fontWeight: 700,
-                  cursor: recuperando ? "not-allowed" : "pointer",
+                  cursor: recuperando
+                    ? "not-allowed"
+                    : "pointer",
                   padding: 0,
                   opacity: recuperando ? 0.7 : 1,
                 }}
@@ -342,6 +377,8 @@ export default function LoginPage() {
               </button>
             </div>
           )}
+
+          {/* MENSAGEM */}
 
           {mensagem && (
             <div
@@ -360,9 +397,11 @@ export default function LoginPage() {
             </div>
           )}
 
+          {/* BOTÃO */}
+
           <button
             type="submit"
-            disabled={loading || reenviando || recuperando}
+            disabled={loading || recuperando}
             style={{
               width: "100%",
               border: 0,
@@ -373,11 +412,11 @@ export default function LoginPage() {
               fontSize: "16px",
               fontWeight: 800,
               cursor:
-                loading || reenviando || recuperando
+                loading || recuperando
                   ? "not-allowed"
                   : "pointer",
               opacity:
-                loading || reenviando || recuperando ? 0.7 : 1,
+                loading || recuperando ? 0.7 : 1,
             }}
           >
             {loading
@@ -388,30 +427,7 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {modo === "cadastro" && mostrarReenviar && (
-          <button
-            type="button"
-            onClick={reenviarConfirmacao}
-            disabled={reenviando}
-            style={{
-              width: "100%",
-              marginTop: "12px",
-              padding: "12px",
-              borderRadius: "12px",
-              border: "1px solid rgba(32,229,138,.35)",
-              background: "transparent",
-              color: "#20e58a",
-              fontSize: "14px",
-              fontWeight: 700,
-              cursor: reenviando ? "not-allowed" : "pointer",
-              opacity: reenviando ? 0.7 : 1,
-            }}
-          >
-            {reenviando
-              ? "Enviando..."
-              : "Reenviar e-mail de confirmação"}
-          </button>
-        )}
+        {/* TROCAR MODO */}
 
         <div
           style={{
