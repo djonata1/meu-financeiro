@@ -6,6 +6,7 @@ import {
   FormEvent,
   ReactNode,
   useEffect,
+  useId,
   useMemo,
   useState,
 } from "react";
@@ -76,6 +77,13 @@ type Goal = {
   icon: string;
 };
 
+type Investment = {
+  id: number;
+  name: string;
+  invested: number;
+  value: number;
+};
+
 const STORAGE = {
   theme: "meu-financeiro-theme",
   transactions: "meu-financeiro-transactions",
@@ -83,6 +91,7 @@ const STORAGE = {
   cards: "meu-financeiro-cards",
   purchases: "meu-financeiro-purchases",
   goals: "meu-financeiro-goals",
+  investments: "meu-financeiro-investments",
 };
 
 const initialTransactions: Transaction[] = [
@@ -239,6 +248,13 @@ const initialGoals: Goal[] = [
     deadline: "2027-01-01",
     icon: "✈️",
   },
+];
+
+const initialInvestments: Investment[] = [
+  { id: 1, name: "Bitcoin", invested: 2500, value: 2500 },
+  { id: 2, name: "Ethereum", invested: 1800, value: 1800 },
+  { id: 3, name: "Renda fixa", invested: 2650, value: 2650 },
+  { id: 4, name: "Ações", invested: 1500, value: 1500 },
 ];
 
 function money(value: number) {
@@ -480,247 +496,547 @@ function Icon({
 function MiniChart({
   dark,
   interactive = false,
+  transactions,
+  month,
 }: {
   dark: boolean;
   interactive?: boolean;
+  transactions?: Transaction[];
+  month?: string;
 }) {
   const [activePoint, setActivePoint] = useState<number | null>(null);
+  const chartId = useId().replace(/:/g, "");
+  const isRealData = Boolean(month);
 
-  const greenCoords = [
-    [0, 115],
-    [35, 102],
-    [70, 108],
-    [105, 82],
-    [140, 91],
-    [175, 57],
-    [210, 72],
-    [245, 42],
-    [280, 53],
-    [315, 30],
-    [350, 50],
-    [385, 35],
-    [420, 46],
-    [455, 25],
-  ];
-
-  const redCoords = [
-    [0, 137],
-    [35, 127],
-    [70, 132],
-    [105, 115],
-    [140, 123],
-    [175, 93],
-    [210, 103],
-    [245, 77],
-    [280, 94],
-    [315, 68],
-    [350, 82],
-    [385, 67],
-    [420, 79],
-    [455, 61],
-  ];
-
-  // Valores usados apenas para o tooltip do gráfico.
-  // O desenho do gráfico permanece exatamente no mesmo formato visual.
-  const greenValues = [
+  const demoGreenValues = [
     2200, 2350, 2280, 2500, 2450, 2650, 2580,
     2780, 2700, 2900, 2820, 3000, 2920, 2800,
   ];
 
-  const redValues = [
+  const demoRedValues = [
     1200, 1350, 1280, 1450, 1400, 1550, 1480,
     1680, 1600, 1780, 1700, 1850, 1760, 1811.7,
   ];
 
-  const greenPoints = greenCoords.map(([x, y]) => `${x},${y}`).join(" ");
-  const redPoints = redCoords.map(([x, y]) => `${x},${y}`).join(" ");
+  const chartData = useMemo(() => {
+    if (!isRealData || !month) {
+      return demoGreenValues.map((incomeValue, index) => ({
+        date: "",
+        label: "",
+        income: incomeValue,
+        expense: demoRedValues[index] ?? 0,
+      }));
+    }
 
-  const tooltipIndex = activePoint ?? 0;
-  const tooltipX = greenCoords[tooltipIndex]?.[0] ?? 0;
-  const tooltipY = Math.min(
-    greenCoords[tooltipIndex]?.[1] ?? 0,
-    redCoords[tooltipIndex]?.[1] ?? 0
+    const [year, monthNumber] = month.split("-").map(Number);
+    const daysInMonth = new Date(year, monthNumber, 0).getDate();
+    const source = transactions ?? [];
+
+    return Array.from({ length: daysInMonth }, (_, index) => {
+      const day = index + 1;
+      const date = `${month}-${String(day).padStart(2, "0")}`;
+      const dayTransactions = source.filter((item) => item.date === date);
+
+      return {
+        date,
+        label: String(day).padStart(2, "0"),
+        income: dayTransactions
+          .filter((item) => item.type === "income")
+          .reduce((sum, item) => sum + item.amount, 0),
+        expense: dayTransactions
+          .filter((item) => item.type === "expense")
+          .reduce((sum, item) => sum + item.amount, 0),
+      };
+    });
+  }, [isRealData, month, transactions]);
+
+  const totalIncome = useMemo(
+    () => chartData.reduce((sum, item) => sum + item.income, 0),
+    [chartData]
   );
 
-  return (
-    <div className="mini-chart-wrap">
-      <svg
-        width="100%"
-        height="230"
-        viewBox="0 0 455 150"
-        preserveAspectRatio="none"
-        className="chart-svg"
-        style={{ touchAction: "pan-y" }}
-        onPointerLeave={(event) => {
-          if (interactive && event.pointerType === "mouse") {
-            setActivePoint(null);
-          }
-        }}
-      >
-        <defs>
-          <linearGradient id="greenFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#22c55e" stopOpacity=".25" />
-            <stop offset="100%" stopColor="#22c55e" stopOpacity="0" />
-          </linearGradient>
-          <linearGradient id="redFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#ef4444" stopOpacity=".18" />
-            <stop offset="100%" stopColor="#ef4444" stopOpacity="0" />
-          </linearGradient>
-        </defs>
+  const totalExpense = useMemo(
+    () => chartData.reduce((sum, item) => sum + item.expense, 0),
+    [chartData]
+  );
 
-        {[25, 55, 85, 115].map((y) => (
+  const totalBalance = totalIncome - totalExpense;
+
+  const width = 760;
+  const height = 290;
+  const padding = { top: 20, right: 16, bottom: 30, left: 4 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const maxValue = Math.max(
+    1,
+    ...chartData.map((item) => Math.max(item.income, item.expense))
+  );
+  const visualMax = maxValue * 1.14;
+
+  const coords = chartData.map((item, index) => {
+    const x =
+      chartData.length === 1
+        ? width / 2
+        : padding.left + (index / (chartData.length - 1)) * innerWidth;
+
+    return {
+      x,
+      incomeY:
+        padding.top +
+        innerHeight -
+        (item.income / visualMax) * innerHeight,
+      expenseY:
+        padding.top +
+        innerHeight -
+        (item.expense / visualMax) * innerHeight,
+    };
+  });
+
+  // Curva Bézier suave, mantendo os valores reais de cada dia.
+  const makeSmoothPath = (key: "incomeY" | "expenseY") => {
+    if (!coords.length) return "";
+
+    if (coords.length === 1) {
+      return `M ${coords[0].x} ${coords[0][key]}`;
+    }
+
+    let path = `M ${coords[0].x} ${coords[0][key]}`;
+
+    for (let index = 1; index < coords.length; index += 1) {
+      const previous = coords[index - 1];
+      const current = coords[index];
+      const next = coords[index + 1] ?? current;
+
+      const cp1x = previous.x + (current.x - (coords[index - 2]?.x ?? previous.x)) / 6;
+      const cp1y =
+        previous[key] +
+        (current[key] - (coords[index - 2]?.[key] ?? previous[key])) / 6;
+
+      const cp2x = current.x - (next.x - previous.x) / 6;
+      const cp2y = current[key] - (next[key] - previous[key]) / 6;
+
+      path += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${current.x} ${current[key]}`;
+    }
+
+    return path;
+  };
+
+  const incomePath = makeSmoothPath("incomeY");
+  const expensePath = makeSmoothPath("expenseY");
+  const baselineY = padding.top + innerHeight;
+
+  const incomeAreaPath = chartData.length
+    ? `${incomePath} L ${coords[coords.length - 1].x} ${baselineY} L ${coords[0].x} ${baselineY} Z`
+    : "";
+
+  const expenseAreaPath = chartData.length
+    ? `${expensePath} L ${coords[coords.length - 1].x} ${baselineY} L ${coords[0].x} ${baselineY} Z`
+    : "";
+
+  const tooltipIndex =
+    activePoint === null
+      ? null
+      : Math.min(activePoint, Math.max(chartData.length - 1, 0));
+
+  const activeData =
+    tooltipIndex !== null ? chartData[tooltipIndex] : null;
+  const activeCoord =
+    tooltipIndex !== null ? coords[tooltipIndex] : null;
+
+  const labelIndices = isRealData
+    ? Array.from(
+        new Set(
+          [0, 7, 14, 21, chartData.length - 1].filter(
+            (index) => index >= 0 && index < chartData.length
+          )
+        )
+      )
+    : [0, 7, 14, 21, 28].filter(
+        (index) => index >= 0 && index < chartData.length
+      );
+
+  const gridValues = [0.25, 0.5, 0.75, 1];
+
+  return (
+    <div className={`mini-chart-wrap ${isRealData ? "chart-real-data" : ""}`}>
+      {isRealData && (
+        <div className="chart-summary">
+          <div className="chart-summary-card income-card">
+            <span>ENTRADAS NO PERÍODO</span>
+            <strong className="chart-summary-income">{money(totalIncome)}</strong>
+          </div>
+
+          <div className="chart-summary-card expense-card">
+            <span>GASTOS NO PERÍODO</span>
+            <strong className="chart-summary-expense">{money(totalExpense)}</strong>
+          </div>
+
+          <div className={`chart-summary-card ${totalBalance >= 0 ? "balance-card" : "balance-card negative"}`}>
+            <span>SALDO DO PERÍODO</span>
+            <strong className={totalBalance >= 0 ? "chart-summary-income" : "chart-summary-expense"}>
+              {money(totalBalance)}
+            </strong>
+          </div>
+        </div>
+      )}
+
+      <div className="chart-canvas">
+        <div className="premium-chart-stage">
+          {isRealData && (
+            <div className="premium-chart-yaxis" aria-hidden="true">
+              {[1, 0.75, 0.5, 0.25, 0].map((ratio) => (
+                <span key={ratio}>
+                  {money(Math.round(visualMax * ratio / 100) * 100)}
+                </span>
+              ))}
+            </div>
+          )}
+
+        <svg
+          width="100%"
+          height={isRealData ? "285" : "265"}
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          className="chart-svg"
+          style={{ touchAction: "pan-y" }}
+          onPointerLeave={(event) => {
+            if (interactive && event.pointerType === "mouse") {
+              setActivePoint(null);
+            }
+          }}
+        >
+          <defs>
+            <linearGradient id={`incomeArea-${chartId}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#39e58b" stopOpacity=".28" />
+              <stop offset="48%" stopColor="#39e58b" stopOpacity=".09" />
+              <stop offset="100%" stopColor="#39e58b" stopOpacity="0" />
+            </linearGradient>
+
+            <linearGradient id={`expenseArea-${chartId}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#ff6171" stopOpacity=".20" />
+              <stop offset="48%" stopColor="#ff6171" stopOpacity=".06" />
+              <stop offset="100%" stopColor="#ff6171" stopOpacity="0" />
+            </linearGradient>
+
+            <linearGradient id={`incomeLine-${chartId}`} x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor="#29d97f" />
+              <stop offset="50%" stopColor="#4af39b" />
+              <stop offset="100%" stopColor="#20c878" />
+            </linearGradient>
+
+            <linearGradient id={`expenseLine-${chartId}`} x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor="#ff5365" />
+              <stop offset="50%" stopColor="#ff7a86" />
+              <stop offset="100%" stopColor="#ff5f70" />
+            </linearGradient>
+
+            <filter id={`softGlow-${chartId}`} x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="3.2" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+
+            <filter id={`pointGlow-${chartId}`} x="-100%" y="-100%" width="300%" height="300%">
+              <feGaussianBlur stdDeviation="4" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+
+          {gridValues.map((ratio) => {
+            const y = padding.top + innerHeight - innerHeight * ratio;
+
+            return (
+              <line
+                key={ratio}
+                x1={padding.left}
+                x2={width - padding.right}
+                y1={y}
+                y2={y}
+                stroke={dark ? "#253449" : "#dce5ef"}
+                strokeWidth="1"
+                strokeDasharray="2 8"
+                opacity={dark ? ".8" : ".9"}
+              />
+            );
+          })}
+
           <line
-            key={y}
-            x1="0"
-            x2="455"
-            y1={y}
-            y2={y}
-            stroke={dark ? "#263247" : "#e8edf4"}
+            x1={padding.left}
+            x2={width - padding.right}
+            y1={baselineY}
+            y2={baselineY}
+            stroke={dark ? "#314158" : "#d6e0eb"}
             strokeWidth="1"
           />
-        ))}
 
-        <polyline
-          points={`${greenPoints} 455,150 0,150`}
-          fill="url(#greenFill)"
-          stroke="none"
-        />
+          <path
+            d={incomeAreaPath}
+            fill={`url(#incomeArea-${chartId})`}
+            stroke="none"
+          />
 
-        <polyline
-          points={greenPoints}
-          fill="none"
-          stroke="#22c55e"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
+          <path
+            d={expenseAreaPath}
+            fill={`url(#expenseArea-${chartId})`}
+            stroke="none"
+          />
 
-        <polyline
-          points={redPoints}
-          fill="none"
-          stroke="#ef4444"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
+          <path
+            d={incomePath}
+            fill="none"
+            stroke="#39e58b"
+            strokeWidth="8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity=".10"
+            filter={`url(#softGlow-${chartId})`}
+          />
 
-        {interactive &&
-          greenCoords.map(([x, y], index) => (
-            <g key={`point-${index}`}>
-              <circle
-                cx={x}
-                cy={y}
-                r="10"
-                fill="transparent"
-                style={{ cursor: "pointer" }}
-                onPointerEnter={(event) => {
-                  if (event.pointerType === "mouse") {
-                    setActivePoint(index);
-                  }
-                }}
-                onPointerMove={() => setActivePoint(index)}
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  setActivePoint(index);
-                }}
+          <path
+            d={expensePath}
+            fill="none"
+            stroke="#ff6171"
+            strokeWidth="8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity=".08"
+            filter={`url(#softGlow-${chartId})`}
+          />
+
+          <path
+            d={incomePath}
+            fill="none"
+            stroke={`url(#incomeLine-${chartId})`}
+            strokeWidth="3.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+
+          <path
+            d={expensePath}
+            fill="none"
+            stroke={`url(#expenseLine-${chartId})`}
+            strokeWidth="3.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+
+          {interactive &&
+            coords.map((point, index) => {
+              const item = chartData[index];
+              const hasActivity = item.income > 0 || item.expense > 0;
+              const isActive = activePoint === index;
+
+              return (
+                <g key={`point-${index}`}>
+                  <circle
+                    cx={point.x}
+                    cy={height / 2}
+                    r={Math.max(16, width / Math.max(chartData.length * 1.5, 1))}
+                    fill="transparent"
+                    style={{ cursor: "crosshair" }}
+                    onPointerEnter={(event) => {
+                      if (event.pointerType === "mouse") setActivePoint(index);
+                    }}
+                    onPointerMove={() => setActivePoint(index)}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      setActivePoint(index);
+                    }}
+                  />
+
+                  {hasActivity && (
+                    <>
+                      <circle
+                        cx={point.x}
+                        cy={point.incomeY}
+                        r={isActive ? 8 : 4}
+                        fill="#39e58b"
+                        opacity={isActive ? ".18" : ".08"}
+                        filter={`url(#pointGlow-${chartId})`}
+                        pointerEvents="none"
+                      />
+                      <circle
+                        cx={point.x}
+                        cy={point.incomeY}
+                        r={isActive ? 5.5 : 3}
+                        fill={dark ? "#0c1622" : "#ffffff"}
+                        stroke="#39e58b"
+                        strokeWidth={isActive ? 2.5 : 1.8}
+                        pointerEvents="none"
+                      />
+
+                      <circle
+                        cx={point.x}
+                        cy={point.expenseY}
+                        r={isActive ? 8 : 4}
+                        fill="#ff6171"
+                        opacity={isActive ? ".16" : ".07"}
+                        filter={`url(#pointGlow-${chartId})`}
+                        pointerEvents="none"
+                      />
+                      <circle
+                        cx={point.x}
+                        cy={point.expenseY}
+                        r={isActive ? 5.5 : 3}
+                        fill={dark ? "#0c1622" : "#ffffff"}
+                        stroke="#ff6171"
+                        strokeWidth={isActive ? 2.5 : 1.8}
+                        pointerEvents="none"
+                      />
+                    </>
+                  )}
+
+                  {isActive && (
+                    <line
+                      x1={point.x}
+                      x2={point.x}
+                      y1={padding.top}
+                      y2={baselineY}
+                      stroke={dark ? "#71829a" : "#aebdcd"}
+                      strokeWidth="1"
+                      strokeDasharray="3 6"
+                      opacity=".75"
+                      pointerEvents="none"
+                    />
+                  )}
+                </g>
+              );
+            })}
+
+          {interactive && activeData && activeCoord && (
+            <g
+              transform={`translate(${Math.min(
+                Math.max(activeCoord.x - 92, 5),
+                width - 190
+              )}, ${Math.max(
+                Math.min(
+                  Math.min(activeCoord.incomeY, activeCoord.expenseY) - 91,
+                  height - 90
+                ),
+                5
+              )})`}
+              pointerEvents="none"
+            >
+              <rect
+                width="184"
+                height="82"
+                rx="13"
+                fill={dark ? "#0b1522" : "#ffffff"}
+                fillOpacity=".97"
+                stroke={dark ? "#30445d" : "#d5dfeb"}
+                strokeWidth="1"
               />
 
-              {activePoint === index && (
-                <>
-                  <line
-                    x1={x}
-                    x2={x}
-                    y1="18"
-                    y2="142"
-                    stroke={dark ? "#52637c" : "#cbd5e1"}
-                    strokeWidth="1"
-                    strokeDasharray="3 4"
-                    pointerEvents="none"
-                  />
+              <rect
+                x="1"
+                y="1"
+                width="182"
+                height="80"
+                rx="12"
+                fill="none"
+                stroke={dark ? "rgba(255,255,255,.045)" : "rgba(15,23,42,.045)"}
+              />
 
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r="5.5"
-                    fill="#22c55e"
-                    stroke={dark ? "#101a29" : "white"}
-                    strokeWidth="2"
-                    pointerEvents="none"
-                  />
+              <text
+                x="13"
+                y="19"
+                fill={dark ? "#9aa9bb" : "#64748b"}
+                fontSize="9"
+                fontWeight="700"
+              >
+                {isRealData ? dateBR(activeData.date) : "Fluxo financeiro"}
+              </text>
 
-                  <circle
-                    cx={redCoords[index][0]}
-                    cy={redCoords[index][1]}
-                    r="5.5"
-                    fill="#ef4444"
-                    stroke={dark ? "#101a29" : "white"}
-                    strokeWidth="2"
-                    pointerEvents="none"
-                  />
-                </>
-              )}
+              <circle cx="14" cy="36" r="3.2" fill="#39e58b" />
+              <text
+                x="23"
+                y="39"
+                fill={dark ? "#e9f2ec" : "#263243"}
+                fontSize="10"
+                fontWeight="750"
+              >
+                Entradas
+              </text>
+              <text
+                x="170"
+                y="39"
+                textAnchor="end"
+                fill="#39e58b"
+                fontSize="10"
+                fontWeight="800"
+              >
+                {money(activeData.income)}
+              </text>
+
+              <circle cx="14" cy="57" r="3.2" fill="#ff6171" />
+              <text
+                x="23"
+                y="60"
+                fill={dark ? "#e9edf2" : "#263243"}
+                fontSize="10"
+                fontWeight="750"
+              >
+                Gastos
+              </text>
+              <text
+                x="170"
+                y="60"
+                textAnchor="end"
+                fill="#ff6171"
+                fontSize="10"
+                fontWeight="800"
+              >
+                {money(activeData.expense)}
+              </text>
+
+              <text
+                x="13"
+                y="75"
+                fill={dark ? "#718198" : "#8491a3"}
+                fontSize="8"
+                fontWeight="650"
+              >
+                Saldo do dia
+              </text>
+              <text
+                x="170"
+                y="75"
+                textAnchor="end"
+                fill={activeData.income - activeData.expense >= 0 ? "#39e58b" : "#ff6171"}
+                fontSize="8"
+                fontWeight="800"
+              >
+                {money(activeData.income - activeData.expense)}
+              </text>
             </g>
-          ))}
+          )}
+        </svg>
+        </div>
 
-        {interactive && activePoint !== null && (
-          <g
-            transform={`translate(${Math.min(
-              Math.max(tooltipX - 72, 5),
-              300
-            )}, ${Math.max(tooltipY - 78, 5)})`}
-            pointerEvents="none"
-          >
-            <rect
-              width="150"
-              height="68"
-              rx="9"
-              fill={dark ? "#0c1a2b" : "#ffffff"}
-              stroke={dark ? "#30445f" : "#d9e1eb"}
-              strokeWidth="1"
-            />
-
-            <text
-              x="12"
-              y="19"
-              fill={dark ? "#9aa9bc" : "#64748b"}
-              fontSize="9"
-              fontWeight="600"
-            >
-              Fluxo financeiro
-            </text>
-
-            <text
-              x="12"
-              y="38"
-              fill="#22c55e"
-              fontSize="10"
-              fontWeight="800"
-            >
-              Entradas: {money(greenValues[activePoint])}
-            </text>
-
-            <text
-              x="12"
-              y="56"
-              fill="#ef4444"
-              fontSize="10"
-              fontWeight="800"
-            >
-              Gastos: {money(redValues[activePoint])}
-            </text>
-          </g>
+        {isRealData && (
+          <div className="chart-days">
+            {labelIndices.map((index) => (
+              <span key={index}>{chartData[index]?.label}</span>
+            ))}
+          </div>
         )}
-      </svg>
+      </div>
     </div>
   );
 }
 
-function DonutChart() {
+function DonutChart({ total }: { total: number }) {
   return (
     <div className="donut-wrap">
       <div className="donut">
         <div className="donut-center">
-          <strong>R$ 3.740</strong>
+          <strong>{money(total)}</strong>
           <span>Total</span>
         </div>
       </div>
@@ -804,6 +1120,7 @@ export default function Home() {
   const [purchases, setPurchases] =
     useState<CardPurchase[]>(initialPurchases);
   const [goals, setGoals] = useState<Goal[]>(initialGoals);
+  const [investments, setInvestments] = useState<Investment[]>(initialInvestments);
   const [currentMonth, setCurrentMonth] = useState<string>(() =>
     resolveCurrentMonth(initialTransactions)
   );
@@ -812,7 +1129,7 @@ export default function Home() {
   );
 
   const [modal, setModal] = useState<
-    "transaction" | "bill" | "purchase" | "goal" | "card" | null
+    "transaction" | "bill" | "purchase" | "goal" | "card" | "investment" | null
   >(null);
 
   const [selectedCard, setSelectedCard] = useState<number>(1);
@@ -864,6 +1181,13 @@ export default function Home() {
   });
   const [editingCardId, setEditingCardId] = useState<number | null>(null);
 
+  const [investmentForm, setInvestmentForm] = useState({
+    name: "",
+    invested: "",
+    value: "",
+  });
+  const [editingInvestmentId, setEditingInvestmentId] = useState<number | null>(null);
+
   const [search, setSearch] = useState("");
   const [cloudReady, setCloudReady] = useState(false);
   const [savingCloud, setSavingCloud] = useState(false);
@@ -896,6 +1220,14 @@ export default function Home() {
       setCards((data.cards as Card[]) || []);
       setPurchases((data.purchases as CardPurchase[]) || []);
       setGoals((data.goals as Goal[]) || []);
+
+      const localInvestments = load<Investment[] | null>(
+        STORAGE.investments,
+        null
+      );
+      if (localInvestments) {
+        setInvestments(localInvestments);
+      }
       return;
     }
 
@@ -907,6 +1239,11 @@ export default function Home() {
     const localCards = load<Card[] | null>(STORAGE.cards, null);
     const localPurchases = load<CardPurchase[] | null>(STORAGE.purchases, null);
     const localGoals = load<Goal[] | null>(STORAGE.goals, null);
+    const localInvestments = load<Investment[] | null>(STORAGE.investments, null);
+
+    if (localInvestments) {
+      setInvestments(localInvestments);
+    }
 
     const cloudPayload = {
       user_id: currentUser.id,
@@ -1096,6 +1433,12 @@ export default function Home() {
   }, [goals, cloudReady]);
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(STORAGE.investments, JSON.stringify(investments));
+    }
+  }, [investments]);
+
+  useEffect(() => {
     const defaultDate = dateForMonth(currentMonth);
     setTransactionForm((current) => ({ ...current, date: defaultDate }));
     setBillForm((current) => ({ ...current, dueDate: defaultDate }));
@@ -1143,15 +1486,42 @@ export default function Home() {
     [viewTransactions]
   );
 
-  const expenses = useMemo(
+  // Gastos são compostos pelos lançamentos de saída + contas que já foram pagas.
+  // Conta pendente ainda não desconta do saldo; ao marcar como "Pago", ela entra
+  // automaticamente nos Gastos, Saldo, Economia e gráficos.
+  const paidBillsAsTransactions = useMemo(
     () =>
-      viewTransactions
-        .filter((item) => item.type === "expense")
-        .reduce((sum, item) => sum + item.amount, 0),
-    [viewTransactions]
+      viewBills
+        .filter((bill) => bill.paid)
+        .map((bill) => ({
+          id: -bill.id,
+          description: bill.description,
+          category: bill.category,
+          account: "Contas",
+          date: bill.dueDate,
+          amount: bill.amount,
+          type: "expense" as const,
+        })),
+    [viewBills]
   );
 
-  const balance = income - expenses + 1460;
+  const dashboardTransactions = useMemo(
+    () => [...viewTransactions, ...paidBillsAsTransactions],
+    [viewTransactions, paidBillsAsTransactions]
+  );
+
+  const expenses = useMemo(
+    () =>
+      dashboardTransactions
+        .filter((item) => item.type === "expense")
+        .reduce((sum, item) => sum + item.amount, 0),
+    [dashboardTransactions]
+  );
+
+  const balance = income - expenses;
+
+  // Economia é exatamente o resultado do mês: positiva ou negativa.
+  const economy = balance;
 
   const pendingBills = useMemo(
     () =>
@@ -1338,6 +1708,61 @@ export default function Home() {
       deadline: "2027-12-01",
       icon: "🎯",
     });
+  }
+
+  function startEditInvestment(investment: Investment) {
+    setEditingInvestmentId(investment.id);
+    setInvestmentForm({
+      name: investment.name,
+      invested: String(investment.invested),
+      value: String(investment.value),
+    });
+    setModal("investment");
+  }
+
+  function saveInvestment(e: FormEvent) {
+    e.preventDefault();
+
+    const invested = Number(investmentForm.invested.replace(",", "."));
+    const value = Number(investmentForm.value.replace(",", "."));
+
+    if (!investmentForm.name.trim() || !Number.isFinite(invested) || invested <= 0 ||
+        !Number.isFinite(value) || value < 0) {
+      return;
+    }
+
+    if (editingInvestmentId !== null) {
+      setInvestments((current) =>
+        current.map((item) =>
+          item.id === editingInvestmentId
+            ? {
+                ...item,
+                name: investmentForm.name.trim(),
+                invested,
+                value,
+              }
+            : item
+        )
+      );
+    } else {
+      setInvestments((current) => [
+        ...current,
+        {
+          id: Date.now(),
+          name: investmentForm.name.trim(),
+          invested,
+          value,
+        },
+      ]);
+    }
+
+    setEditingInvestmentId(null);
+    setModal(null);
+    setInvestmentForm({ name: "", invested: "", value: "" });
+  }
+
+  function deleteInvestment(id: number) {
+    setInvestments((current) => current.filter((item) => item.id !== id));
   }
 
   function startEditCard(card: Card) {
@@ -1929,7 +2354,7 @@ export default function Home() {
               expenses={expenses}
               balance={balance}
               pendingBills={pendingBills}
-              transactions={viewTransactions}
+              transactions={dashboardTransactions}
               bills={viewBills}
               cards={cards}
               purchases={purchases}
@@ -2005,7 +2430,17 @@ export default function Home() {
           )}
 
           {page === "investments" && (
-            <InvestmentsPage dark={dark} />
+            <InvestmentsPage
+              dark={dark}
+              investments={investments}
+              onNew={() => {
+                setEditingInvestmentId(null);
+                setInvestmentForm({ name: "", invested: "", value: "" });
+                setModal("investment");
+              }}
+              onEdit={startEditInvestment}
+              onDelete={deleteInvestment}
+            />
           )}
 
           {page === "reports" && (
@@ -2418,6 +2853,86 @@ export default function Home() {
               <button type="submit" className="btn primary">
                 <Icon name="check" size={17} />
                 Adicionar compra
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {modal === "investment" && (
+        <Modal
+          title={
+            editingInvestmentId !== null
+              ? "Editar investimento"
+              : "Novo investimento"
+          }
+          onClose={() => {
+            setEditingInvestmentId(null);
+            setModal(null);
+          }}
+          dark={dark}
+        >
+          <form onSubmit={saveInvestment}>
+            <div className="form-grid">
+              <Field
+                label="Investimento"
+                value={investmentForm.name}
+                placeholder="Ex.: Bitcoin"
+                onChange={(value) =>
+                  setInvestmentForm((current) => ({
+                    ...current,
+                    name: value,
+                  }))
+                }
+                dark={dark}
+              />
+
+              <Field
+                label="Valor investido"
+                value={investmentForm.invested}
+                placeholder="2500"
+                type="number"
+                onChange={(value) =>
+                  setInvestmentForm((current) => ({
+                    ...current,
+                    invested: value,
+                  }))
+                }
+                dark={dark}
+              />
+
+              <Field
+                label="Valor atual"
+                value={investmentForm.value}
+                placeholder="2800"
+                type="number"
+                onChange={(value) =>
+                  setInvestmentForm((current) => ({
+                    ...current,
+                    value,
+                  }))
+                }
+                dark={dark}
+              />
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn secondary"
+                onClick={() => {
+                  setEditingInvestmentId(null);
+                  setModal(null);
+                }}
+              >
+                Cancelar
+              </button>
+
+              <button className="btn primary">
+                <Icon name="check" size={17} />
+                {editingInvestmentId !== null
+                  ? "Salvar alterações"
+                  : "Adicionar investimento"}
               </button>
             </div>
           </form>
@@ -2854,41 +3369,46 @@ function Dashboard({
         </div>
       </div>
 
-      <div className="stats-grid">
-        <StatCard
-          title="Saldo atual"
-          value={money(balance)}
-          subtitle="+8,4% em relação a Julho"
-          icon="wallet"
-          type="green"
-          dark={dark}
-        />
-
-        <StatCard
+      <div className="stats-grid dashboard-premium-stats">
+        <DashboardPremiumStat
           title="Entradas"
           value={money(income)}
           subtitle="Receitas deste mês"
-          icon="arrowDown"
+          icon="arrowUp"
           type="green"
-          dark={dark}
+          trend="+18,6%"
+          points={[28, 35, 31, 44, 39, 51, 47, 62]}
         />
 
-        <StatCard
+        <DashboardPremiumStat
           title="Gastos"
           value={money(expenses)}
           subtitle="Despesas deste mês"
-          icon="arrowUp"
+          icon="arrowDown"
           type="red"
-          dark={dark}
+          trend="-6,2%"
+          points={[34, 28, 39, 32, 47, 41, 54, 50]}
         />
 
-        <StatCard
-          title="Disponível no mês"
-          value={money(Math.max(0, income - expenses))}
-          subtitle={`${economy}% de economia`}
-          icon="card"
+        <DashboardPremiumStat
+          title="Saldo"
+          value={money(balance)}
+          subtitle="Resultado do mês"
+          icon="wallet"
           type="blue"
-          dark={dark}
+          trend={`${balance >= 0 ? "+" : ""}${economy}%`}
+          points={[22, 29, 26, 38, 34, 45, 41, 55]}
+        />
+
+        <DashboardPremiumStat
+          title="Economia"
+          value={money(economy)}
+          subtitle="Você economizou"
+          icon="card"
+          type={economy < 0 ? "red" : "green"}
+          trend={`${income > 0 ? ((economy / income) * 100).toFixed(1) : "0.0"}%`}
+          points={[20, 25, 24, 33, 31, 40, 38, 48]}
+          ring
         />
       </div>
 
@@ -2912,15 +3432,12 @@ function Dashboard({
             </span>
           </div>
 
-          <MiniChart dark={dark} interactive />
-
-          <div className="chart-days">
-            <span>01 Ago</span>
-            <span>08 Ago</span>
-            <span>15 Ago</span>
-            <span>22 Ago</span>
-            <span>29 Ago</span>
-          </div>
+          <MiniChart
+            dark={dark}
+            interactive
+            transactions={transactions}
+            month={selectedMonth}
+          />
         </section>
 
         <section className="panel category-panel">
@@ -2929,53 +3446,54 @@ function Dashboard({
             subtitle="Onde seu dinheiro está indo"
           />
 
-          <div className="category-content">
-            <DonutChart />
+          {(() => {
+            const categoryConfig = [
+              ["Casa", "green"],
+              ["Alimentação", "blue"],
+              ["Transporte", "orange"],
+              ["Lazer", "purple"],
+              ["Assinaturas", "pink"],
+              ["Outros", "gray"],
+            ] as const;
 
-            <div className="category-list">
-              <CategoryLine
-                label="Casa"
-                value={1500}
-                percent={40}
-                color="green"
-              />
+            const categoryTotals = categoryConfig
+              .map(([label, color]) => ({
+                label,
+                color,
+                value: transactions
+                  .filter((item) => item.type === "expense")
+                  .filter((item) => item.category === label)
+                  .reduce((sum, item) => sum + item.amount, 0),
+              }))
+              .filter((item) => item.value > 0);
 
-              <CategoryLine
-                label="Alimentação"
-                value={620}
-                percent={17}
-                color="blue"
-              />
+            const categoryTotal = categoryTotals.reduce(
+              (sum, item) => sum + item.value,
+              0
+            );
 
-              <CategoryLine
-                label="Transporte"
-                value={400}
-                percent={11}
-                color="orange"
-              />
+            return (
+              <div className="category-content">
+                <DonutChart total={categoryTotal} />
 
-              <CategoryLine
-                label="Lazer"
-                value={340}
-                percent={9}
-                color="purple"
-              />
-
-              <CategoryLine
-                label="Assinaturas"
-                value={280}
-                percent={7}
-                color="pink"
-              />
-
-              <CategoryLine
-                label="Outros"
-                value={600}
-                percent={16}
-                color="gray"
-              />
-            </div>
-          </div>
+                <div className="category-list">
+                  {categoryTotals.map((item) => (
+                    <CategoryLine
+                      key={item.label}
+                      label={item.label}
+                      value={item.value}
+                      percent={
+                        categoryTotal > 0
+                          ? Math.round((item.value / categoryTotal) * 100)
+                          : 0
+                      }
+                      color={item.color}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
           <button className="text-button" onClick={onTransactions}>
             Ver todas as categorias →
@@ -3012,7 +3530,7 @@ function Dashboard({
           />
 
           <div className="bill-list">
-            {bills.slice(0, 4).map((bill) => (
+            {bills.filter((bill) => !bill.paid).slice(0, 4).map((bill) => (
               <div className="bill-row" key={bill.id}>
                 <div className="bill-icon">
                   <Icon name="bills" size={17} />
@@ -3086,6 +3604,122 @@ function Dashboard({
         </section>
       </div>
     </>
+  );
+}
+
+
+function DashboardPremiumStat({
+  title,
+  value,
+  subtitle,
+  icon,
+  type,
+  trend,
+  points,
+  ring = false,
+}: {
+  title: string;
+  value: string;
+  subtitle: string;
+  icon: string;
+  type: "green" | "red" | "blue";
+  trend: string;
+  points: number[];
+  ring?: boolean;
+}) {
+  const line = points
+    .map((point, index) => {
+      const x = (index / Math.max(points.length - 1, 1)) * 94 + 3;
+      const y = 28 - (point / 70) * 23;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+
+  const rawRingValue = Number.parseFloat(trend) || 0;
+  const ringValue = Math.max(0, Math.min(100, Math.abs(rawRingValue)));
+  const ringColor = type === "red" ? "#ff6b6b" : "#57ef92";
+
+  return (
+    <div className={`dashboard-premium-stat ${type}${ring ? " economy-stat" : ""}`}>
+      <div className="dashboard-premium-stat-top">
+        <div className={`dashboard-premium-icon ${type}`}>
+          <Icon name={icon} size={18} />
+        </div>
+
+        <span className="dashboard-premium-stat-title">{title}</span>
+
+        {ring && (
+          <div
+            className="dashboard-premium-ring"
+            style={{
+              background: `radial-gradient(circle at center, var(--panel) 61%, transparent 63%), conic-gradient(${ringColor} 0 ${ringValue}%, rgba(87,239,146,.12) ${ringValue}% 100%)`,
+            }}
+            aria-label={`${rawRingValue.toFixed(1)}% da receita de resultado do mês`}
+          >
+            <span>{ringValue.toFixed(1)}%</span>
+          </div>
+        )}
+      </div>
+
+      <strong className="dashboard-premium-value">{value}</strong>
+
+      <div className="dashboard-premium-bottom">
+        <div>
+          <span className="dashboard-premium-subtitle">
+            {ring && rawRingValue < 0 ? "Você ficou no negativo" : subtitle}
+          </span>
+          {ring ? (
+            <span className="dashboard-premium-trend economy-saved-label">
+              da sua receita
+            </span>
+          ) : (
+            <span className="dashboard-premium-trend">
+              {trend} <small>vs mês anterior</small>
+            </span>
+          )}
+        </div>
+
+        <svg
+          className="dashboard-premium-spark"
+          viewBox="0 0 100 32"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <defs>
+            <linearGradient id={`spark-${type}-${ring ? "economy" : "normal"}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopOpacity=".24" />
+              <stop offset="100%" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+
+          <polyline
+            points={`3,30 ${line} 97,30`}
+            fill={`url(#spark-${type}-${ring ? "economy" : "normal"})`}
+            stroke="none"
+          />
+
+          <polyline
+            points={line}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </div>
+
+      {ring && (
+        <button
+          type="button"
+          className="economy-arrow"
+          aria-label="Ver detalhes da economia"
+          onClick={() => {}}
+        >
+          ›
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -3919,7 +4553,25 @@ function GoalsPage({
    INVESTIMENTOS
 ========================================================= */
 
-function InvestmentsPage({ dark }: { dark: boolean }) {
+function InvestmentsPage({
+  dark,
+  investments,
+  onNew,
+  onEdit,
+  onDelete,
+}: {
+  dark: boolean;
+  investments: Investment[];
+  onNew: () => void;
+  onEdit: (investment: Investment) => void;
+  onDelete: (id: number) => void;
+}) {
+  const totalInvested = investments.reduce((sum, item) => sum + item.invested, 0);
+  const totalValue = investments.reduce((sum, item) => sum + item.value, 0);
+  const rendimento = totalValue - totalInvested;
+  const rentabilidade =
+    totalInvested > 0 ? (rendimento / totalInvested) * 100 : 0;
+
   return (
     <>
       <div className="page-heading">
@@ -3929,7 +4581,7 @@ function InvestmentsPage({ dark }: { dark: boolean }) {
           <p>Acompanhe a evolução do seu patrimônio.</p>
         </div>
 
-        <button className="btn primary">
+        <button className="btn primary" onClick={onNew}>
           <Icon name="plus" size={17} />
           Novo investimento
         </button>
@@ -3938,8 +4590,8 @@ function InvestmentsPage({ dark }: { dark: boolean }) {
       <div className="stats-grid three">
         <StatCard
           title="Patrimônio investido"
-          value="R$ 8.450,00"
-          subtitle="+12,4% este ano"
+          value={money(totalValue)}
+          subtitle="Valor atual da carteira"
           icon="chart"
           type="green"
           dark={dark}
@@ -3947,16 +4599,16 @@ function InvestmentsPage({ dark }: { dark: boolean }) {
 
         <StatCard
           title="Rendimento"
-          value="R$ 930,00"
+          value={money(rendimento)}
           subtitle="Lucro acumulado"
           icon="arrowUp"
-          type="green"
+          type={rendimento >= 0 ? "green" : "red"}
           dark={dark}
         />
 
         <StatCard
           title="Rentabilidade"
-          value="12,38%"
+          value={`${rentabilidade.toFixed(2).replace(".", ",")}%`}
           subtitle="Desde o início"
           icon="chart"
           type="blue"
@@ -3968,7 +4620,7 @@ function InvestmentsPage({ dark }: { dark: boolean }) {
         <section className="panel chart-panel">
           <PanelHeader
             title="Evolução patrimonial"
-            subtitle="Últimos 12 meses"
+            subtitle="Carteira atual"
           />
 
           <MiniChart dark={dark} />
@@ -3981,29 +4633,21 @@ function InvestmentsPage({ dark }: { dark: boolean }) {
           />
 
           <div className="investment-list">
-            <InvestmentRow
-              name="Bitcoin"
-              value="R$ 2.500,00"
-              percent="29,6%"
-            />
-
-            <InvestmentRow
-              name="Ethereum"
-              value="R$ 1.800,00"
-              percent="21,3%"
-            />
-
-            <InvestmentRow
-              name="Renda fixa"
-              value="R$ 2.650,00"
-              percent="31,4%"
-            />
-
-            <InvestmentRow
-              name="Ações"
-              value="R$ 1.500,00"
-              percent="17,7%"
-            />
+            {investments.length === 0 ? (
+              <div className="empty-state">
+                Nenhum investimento cadastrado.
+              </div>
+            ) : (
+              investments.map((investment) => (
+                <InvestmentRow
+                  key={investment.id}
+                  investment={investment}
+                  totalValue={totalValue}
+                  onEdit={onEdit}
+                  onDelete={onDelete}
+                />
+              ))
+            )}
           </div>
         </section>
       </div>
@@ -4012,32 +4656,59 @@ function InvestmentsPage({ dark }: { dark: boolean }) {
 }
 
 function InvestmentRow({
-  name,
-  value,
-  percent,
+  investment,
+  totalValue,
+  onEdit,
+  onDelete,
 }: {
-  name: string;
-  value: string;
-  percent: string;
+  investment: Investment;
+  totalValue: number;
+  onEdit: (investment: Investment) => void;
+  onDelete: (id: number) => void;
 }) {
+  const percent =
+    totalValue > 0 ? (investment.value / totalValue) * 100 : 0;
+
   return (
     <div className="investment-row">
       <div className="investment-icon">
-        {name === "Bitcoin"
+        {investment.name.toLowerCase().includes("bitcoin")
           ? "₿"
-          : name === "Ethereum"
+          : investment.name.toLowerCase().includes("ethereum")
           ? "◆"
-          : name === "Ações"
+          : investment.name.toLowerCase().includes("ação")
           ? "↗"
           : "R$"}
       </div>
 
       <div>
-        <strong>{name}</strong>
-        <span>{percent} da carteira</span>
+        <strong>{investment.name}</strong>
+        <span>{percent.toFixed(1).replace(".", ",")}% da carteira</span>
       </div>
 
-      <strong>{value}</strong>
+      <strong>{money(investment.value)}</strong>
+
+      <div className="investment-actions">
+        <button
+          type="button"
+          className="icon-button"
+          onClick={() => onEdit(investment)}
+          aria-label={`Editar ${investment.name}`}
+          title="Editar"
+        >
+          <Icon name="edit" size={15} />
+        </button>
+
+        <button
+          type="button"
+          className="icon-button"
+          onClick={() => onDelete(investment.id)}
+          aria-label={`Excluir ${investment.name}`}
+          title="Excluir"
+        >
+          <Icon name="trash" size={15} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -4274,13 +4945,13 @@ function SettingsPage({
 
 const style = `
 :root {
-  --green: #20c978;
-  --green-dark: #16a765;
-  --red: #ef5360;
-  --blue: #4f8cff;
-  --orange: #f59e0b;
-  --purple: #8b5cf6;
-  --pink: #ec4899;
+  --green: #2fe58a;
+  --green-dark: #1dbd73;
+  --red: #ff5f70;
+  --blue: #5d95ff;
+  --orange: #f5b84b;
+  --purple: #9a7cff;
+  --pink: #f06aa9;
 }
 
 * {
@@ -4320,14 +4991,14 @@ button {
 .app {
   touch-action: pan-y;
   overscroll-behavior-x: none;
-  --bg: #f5f7fb;
+  --bg: #f4f7fb;
   --sidebar: #ffffff;
   --panel: #ffffff;
   --panel-2: #f8fafc;
-  --text: #18212f;
-  --muted: #8490a3;
-  --border: #e7ebf2;
-  --hover: #f2f5f8;
+  --text: #172231;
+  --muted: #8290a3;
+  --border: #e1e8f0;
+  --hover: #eef3f7;
   --shadow: 0 12px 35px rgba(31, 41, 55, .055);
 
   min-height: 100vh;
@@ -4337,14 +5008,14 @@ button {
 }
 
 .app.dark {
-  --bg: #080e18;
-  --sidebar: #0c1420;
-  --panel: #101a29;
-  --panel-2: #0c1522;
-  --text: #edf3fa;
-  --muted: #7e8da2;
-  --border: #1d2a3b;
-  --hover: #152132;
+  --bg: #070c14;
+  --sidebar: #0a111b;
+  --panel: #0e1723;
+  --panel-2: #0a121e;
+  --text: #f1f5f9;
+  --muted: #8796aa;
+  --border: #1b2a3b;
+  --hover: #142132;
   --shadow: 0 18px 50px rgba(0, 0, 0, .22);
 }
 
@@ -4359,6 +5030,7 @@ button {
   position: sticky;
   top: 0;
   height: 100vh;
+  z-index: 100;
 }
 
 .brand {
@@ -4374,7 +5046,7 @@ button {
   border-radius: 10px;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, #27d987, #16ad6c);
+  background: linear-gradient(135deg, #35e58c, #20b873);
   color: white;
   box-shadow: 0 7px 18px rgba(32, 201, 120, .22);
 }
@@ -4433,7 +5105,7 @@ button {
   visibility: hidden;
   pointer-events: none;
   transition: opacity .16s ease, transform .16s ease, visibility .16s ease;
-  z-index: 70;
+  z-index: 1000;
 }
 
 .nav-item-wrap .nav-hover-info::before {
@@ -4866,12 +5538,304 @@ button {
   grid-template-columns: repeat(3, 1fr);
 }
 
+
+/* =========================================================
+   DASHBOARD PREMIUM — cards e acabamento do gráfico
+   Somente o Dashboard usa estas classes.
+========================================================= */
+
+.dashboard-premium-stats {
+  gap: 13px;
+}
+
+.dashboard-premium-stat {
+  position: relative;
+  min-width: 0;
+  min-height: 126px;
+  overflow: hidden;
+  padding: 14px 16px 13px;
+  border: 1px solid rgba(255,255,255,.075);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 12% 10%, rgba(255,255,255,.035), transparent 34%),
+    linear-gradient(145deg, rgba(255,255,255,.035), rgba(255,255,255,0) 58%),
+    var(--panel);
+  box-shadow:
+    var(--shadow),
+    inset 0 1px 0 rgba(255,255,255,.035);
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+
+.dashboard-premium-stat:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255,255,255,.12);
+  box-shadow:
+    0 14px 35px rgba(0,0,0,.18),
+    inset 0 1px 0 rgba(255,255,255,.045);
+}
+
+.dashboard-premium-stat::after {
+  content: "";
+  position: absolute;
+  inset: auto -25% -65% 35%;
+  height: 120px;
+  border-radius: 50%;
+  filter: blur(32px);
+  opacity: .11;
+  pointer-events: none;
+}
+
+.dashboard-premium-stat.green::after { background: #39e58b; }
+.dashboard-premium-stat.red::after { background: #ff6171; }
+.dashboard-premium-stat.blue::after { background: #5d95ff; }
+
+.dashboard-premium-stat-top {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 32px;
+  position: relative;
+  z-index: 2;
+}
+
+.dashboard-premium-stat-title {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.dashboard-premium-icon {
+  width: 31px;
+  height: 31px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+}
+
+.dashboard-premium-icon.green {
+  color: #061b10;
+  background: linear-gradient(145deg, #59ff9d, #22df7e);
+  box-shadow: 0 0 20px rgba(57,229,139,.18), inset 0 1px 0 rgba(255,255,255,.32);
+}
+
+.dashboard-premium-icon.red {
+  color: #fff;
+  background: linear-gradient(145deg, #ff7b84, #ff4f61);
+  box-shadow: 0 0 20px rgba(255,97,113,.16), inset 0 1px 0 rgba(255,255,255,.28);
+}
+
+.dashboard-premium-icon.blue {
+  color: #fff;
+  background: linear-gradient(145deg, #6da7ff, #477ff1);
+  box-shadow: 0 0 20px rgba(93,149,255,.16), inset 0 1px 0 rgba(255,255,255,.28);
+}
+
+.dashboard-premium-value {
+  display: block;
+  margin-top: 7px;
+  font-size: 20px;
+  line-height: 1.05;
+  letter-spacing: -.7px;
+  position: relative;
+  z-index: 2;
+}
+
+.dashboard-premium-stat.green .dashboard-premium-value { color: #39e58b; }
+.dashboard-premium-stat.red .dashboard-premium-value { color: #ff6676; }
+.dashboard-premium-stat.blue .dashboard-premium-value { color: #67a3ff; }
+
+.dashboard-premium-bottom {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 7px;
+  position: relative;
+  z-index: 2;
+}
+
+.dashboard-premium-subtitle {
+  display: block;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.2;
+}
+
+.dashboard-premium-trend {
+  display: block;
+  margin-top: 3px;
+  color: #39e58b;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.dashboard-premium-stat.red .dashboard-premium-trend {
+  color: #ff6676;
+}
+
+.dashboard-premium-trend small {
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 600;
+}
+
+.dashboard-premium-spark {
+  width: 88px;
+  height: 35px;
+  flex: 0 0 88px;
+  overflow: visible;
+  opacity: .95;
+}
+
+.dashboard-premium-stat.green .dashboard-premium-spark { color: #39e58b; }
+.dashboard-premium-stat.red .dashboard-premium-spark { color: #ff6676; }
+.dashboard-premium-stat.blue .dashboard-premium-spark { color: #67a3ff; }
+
+.dashboard-premium-ring {
+  width: 49px;
+  height: 49px;
+  margin-left: auto;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #57ef92;
+  font-size: 9px;
+  font-weight: 850;
+  flex: 0 0 auto;
+  box-shadow:
+    0 0 20px rgba(87,239,146,.12),
+    inset 0 0 8px rgba(87,239,146,.04);
+}
+
+.economy-stat {
+  position: relative !important;
+  padding-right: 13px;
+}
+
+.economy-stat .dashboard-premium-stat-top {
+  padding-right: 39px;
+}
+
+.economy-stat .dashboard-premium-value {
+  margin-top: 5px;
+  font-size: 19px;
+  letter-spacing: -.55px;
+  padding-right: 45px;
+}
+
+.economy-stat .dashboard-premium-bottom {
+  margin-top: 4px;
+  padding-right: 40px;
+}
+
+.economy-stat .dashboard-premium-subtitle {
+  font-size: 8px;
+  font-weight: 700;
+  color: #d8e2dc;
+}
+
+.economy-stat .economy-saved-label {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 650;
+}
+
+.economy-stat .dashboard-premium-spark {
+  position: absolute !important;
+  right: 42px !important;
+  bottom: 7px !important;
+  top: auto !important;
+  left: auto !important;
+  width: 74px !important;
+  height: 23px !important;
+  margin: 0 !important;
+  flex-basis: 74px !important;
+  transform: none !important;
+  z-index: 1 !important;
+}
+
+.investment-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.investment-actions .icon-button {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+}
+
+.economy-arrow {
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 23px;
+  height: 23px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #9ca9b8;
+  font-size: 25px;
+  line-height: 20px;
+  cursor: pointer;
+  transition: color .18s ease, transform .18s ease;
+}
+
+.economy-arrow:hover {
+  color: #57ef92;
+  transform: translateY(-50%) translateX(2px);
+}
+
+.premium-chart-stage {
+  position: relative;
+  width: 100%;
+  padding-left: 28px;
+}
+
+.premium-chart-yaxis {
+  position: absolute;
+  left: 0;
+  top: 18px;
+  bottom: 31px;
+  width: 27px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.premium-chart-yaxis span {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.chart-real-data .chart-canvas {
+  border-radius: 12px;
+}
+
+.chart-real-data .chart-svg {
+  filter: drop-shadow(0 8px 20px rgba(0,0,0,.07));
+}
+
 .stat-card,
 .panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  border-radius: 11px;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255,255,255,.025), transparent 34%),
+    linear-gradient(145deg, rgba(255,255,255,.018), transparent 55%),
+    var(--panel);
+  border: 1px solid rgba(255,255,255,.065);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.025);
+  border-radius: 14px;
 }
 
 .stat-card {
@@ -5011,27 +5975,27 @@ button {
 }
 
 .dot.green {
-  background: #20c978;
+  background: #2fe58a;
 }
 
 .dot.red {
-  background: #ef5360;
+  background: #ff5f70;
 }
 
 .dot.blue {
-  background: #4f8cff;
+  background: #5d95ff;
 }
 
 .dot.orange {
-  background: #f59e0b;
+  background: #f5b84b;
 }
 
 .dot.purple {
-  background: #8b5cf6;
+  background: #9a7cff;
 }
 
 .dot.pink {
-  background: #ec4899;
+  background: #f06aa9;
 }
 
 .dot.gray {
@@ -5076,11 +6040,11 @@ button {
   border-radius: 50%;
   background:
     conic-gradient(
-      #20c978 0 40%,
-      #4f8cff 40% 57%,
-      #f59e0b 57% 68%,
-      #8b5cf6 68% 77%,
-      #ec4899 77% 84%,
+      #2fe58a 0 40%,
+      #5d95ff 40% 57%,
+      #f5b84b 57% 68%,
+      #9a7cff 68% 77%,
+      #f06aa9 77% 84%,
       #64748b 84% 100%
     );
   display: grid;
@@ -5340,7 +6304,7 @@ button {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #20c978, #48df91);
+  background: linear-gradient(90deg, #2fe58a, #48df91);
 }
 
 .progress.large {
@@ -5714,7 +6678,7 @@ button {
 .invoice-status strong {
   margin-top: 3px;
   font-size: 11px;
-  color: #f59e0b;
+  color: #f5b84b;
 }
 
 .invoice-status small {
@@ -5738,7 +6702,7 @@ button {
 }
 
 .invoice-status.pending strong {
-  color: #f59e0b;
+  color: #f5b84b;
 }
 
 .invoice-status.upcoming {
@@ -6029,7 +6993,7 @@ button {
 
 .investment-row {
   display: grid;
-  grid-template-columns: 36px 1fr auto;
+  grid-template-columns: 36px 1fr auto auto;
   align-items: center;
   gap: 10px;
   padding: 12px 0;
@@ -6205,15 +7169,15 @@ button {
   max-height: calc(100vh - 40px);
   overflow: auto;
   background: #fff;
-  color: #18212f;
+  color: #172231;
   border-radius: 16px;
   padding: 21px;
   box-shadow: 0 30px 90px rgba(0,0,0,.25);
 }
 
 .modal-dark {
-  background: #101a29;
-  color: #edf3fa;
+  background: #0e1723;
+  color: #f1f5f9;
 }
 
 .modal-header {
@@ -6230,7 +7194,7 @@ button {
 
 .modal-header p {
   margin: 4px 0 0;
-  color: #8490a3;
+  color: #8290a3;
   font-size: 9px;
 }
 
@@ -6257,7 +7221,7 @@ button {
   border: 1px solid #e1e6ee;
   border-radius: 8px;
   background: #f8fafc;
-  color: #18212f;
+  color: #172231;
   padding: 0 10px;
   outline: none;
   font-size: 10px;
@@ -6269,9 +7233,9 @@ button {
 }
 
 .input-dark {
-  background: #0c1522;
+  background: #0a121e;
   border-color: #263449;
-  color: #edf3fa;
+  color: #f1f5f9;
 }
 
 .type-switch {
@@ -6347,6 +7311,523 @@ button {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 21px;
+}
+
+
+/* =========================================================
+   FLUXO FINANCEIRO — acabamento premium
+   ========================================================= */
+.chart-panel {
+  overflow: hidden;
+  position: relative;
+}
+
+.chart-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 12% 100%, rgba(47, 229, 138, .035), transparent 34%),
+    radial-gradient(circle at 88% 8%, rgba(93, 149, 255, .025), transparent 30%);
+}
+
+.chart-real-data {
+  padding-top: 1px;
+}
+
+.chart-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 8px 0 8px;
+  position: relative;
+  z-index: 1;
+}
+
+.chart-summary-card {
+  min-width: 0;
+  padding: 10px 12px 11px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, .028),
+    rgba(255, 255, 255, 0)
+  ), var(--panel-2);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.025);
+}
+
+.app:not(.dark) .chart-summary-card {
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, .95),
+    rgba(247, 250, 253, .92)
+  );
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.9);
+}
+
+.chart-summary-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: .65px;
+  margin-bottom: 5px;
+  white-space: nowrap;
+}
+
+.chart-summary-card strong {
+  display: block;
+  font-size: 12px;
+  line-height: 1.1;
+  letter-spacing: -.25px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chart-summary-income {
+  color: #2fe58a;
+}
+
+.chart-summary-expense {
+  color: #ff5f70;
+}
+
+.chart-summary-card.income-card {
+  box-shadow: inset 0 1px 0 rgba(47,229,138,.05);
+}
+
+.chart-summary-card.expense-card {
+  box-shadow: inset 0 1px 0 rgba(255,95,112,.045);
+}
+
+.chart-summary-card.balance-card {
+  box-shadow: inset 0 1px 0 rgba(93,149,255,.05);
+}
+
+.chart-summary-card.balance-card.negative {
+  box-shadow: inset 0 1px 0 rgba(255,95,112,.05);
+}
+
+.chart-canvas {
+  position: relative;
+  z-index: 1;
+  padding: 0 1px 1px;
+}
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  overflow: visible;
+  touch-action: pan-y;
+}
+
+.chart-days {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .15px;
+  padding: 0 4px;
+  margin-top: -1px;
+}
+
+.chart-days span {
+  min-width: 18px;
+  text-align: center;
+}
+
+.stat-card,
+.panel {
+  border-radius: 13px;
+}
+
+.app.dark .stat-card,
+.app.dark .panel {
+  background:
+    linear-gradient(145deg, rgba(255,255,255,.012), rgba(255,255,255,0)),
+    var(--panel);
+  box-shadow:
+    0 18px 48px rgba(0,0,0,.20),
+    inset 0 1px 0 rgba(255,255,255,.018);
+}
+
+.app:not(.dark) .stat-card,
+.app:not(.dark) .panel {
+  box-shadow:
+    0 14px 35px rgba(31,41,55,.045),
+    inset 0 1px 0 rgba(255,255,255,.85);
+}
+
+.app.dark .chart-panel {
+  border-color: #1d2c3e;
+}
+
+.legend {
+  position: relative;
+  z-index: 1;
+  gap: 18px;
+}
+
+.legend span {
+  font-weight: 600;
+}
+
+.dot.green,
+.dot.red {
+  box-shadow: 0 0 0 3px rgba(255,255,255,.018), 0 0 12px currentColor;
+}
+
+.dot.green {
+  color: #2fe58a;
+  background: #2fe58a;
+}
+
+.dot.red {
+  color: #ff5f70;
+  background: #ff5f70;
+}
+
+
+
+/* =========================================================
+   DASHBOARD GLASS / PREMIUM POLISH
+   Mantém as funções e estrutura; apenas acabamento visual.
+========================================================= */
+
+.dashboard-grid .panel,
+.bottom-grid .panel {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, .12);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 8% 0%, rgba(90, 145, 255, .045), transparent 38%),
+    linear-gradient(145deg, rgba(255,255,255,.035), rgba(255,255,255,0) 55%),
+    var(--panel);
+  box-shadow:
+    0 18px 45px rgba(0,0,0,.12),
+    inset 0 1px 0 rgba(255,255,255,.035);
+}
+
+.dashboard-grid .panel::before,
+.bottom-grid .panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    rgba(255,255,255,.025),
+    transparent 34%,
+    transparent 70%,
+    rgba(255,255,255,.012)
+  );
+}
+
+.dashboard-grid .panel-header,
+.bottom-grid .panel-header {
+  position: relative;
+  z-index: 2;
+}
+
+.dashboard-grid .panel-header h2,
+.bottom-grid .panel-header h2 {
+  font-size: 14px;
+  letter-spacing: -.35px;
+  font-weight: 780;
+}
+
+.dashboard-grid .panel-header p,
+.bottom-grid .panel-header p {
+  font-size: 9px;
+  opacity: .88;
+}
+
+/* ---------- Category card: referência premium ---------- */
+
+.dashboard-grid .category-panel {
+  padding: 19px 18px 16px;
+  min-height: 310px;
+}
+
+.category-panel .category-content {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 155px minmax(0, 1fr);
+  align-items: center;
+  gap: 13px;
+  margin-top: 4px;
+}
+
+.category-panel .donut-wrap {
+  width: 155px;
+  min-width: 155px;
+}
+
+.category-panel .donut {
+  width: 137px;
+  height: 137px;
+  box-shadow:
+    0 0 28px rgba(47,229,138,.07),
+    inset 0 0 0 1px rgba(255,255,255,.05);
+}
+
+.category-panel .donut-center {
+  width: 86px;
+  height: 86px;
+  background:
+    radial-gradient(circle at 45% 35%, rgba(255,255,255,.035), transparent 60%),
+    var(--panel);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.025);
+}
+
+.category-panel .donut-center strong {
+  font-size: 13px;
+  letter-spacing: -.3px;
+}
+
+.category-panel .donut-center span {
+  font-size: 8px;
+}
+
+.category-panel .category-list {
+  min-width: 0;
+}
+
+.category-panel .category-line {
+  grid-template-columns: minmax(80px,1fr) auto auto;
+  gap: 7px;
+  min-height: 28px;
+  padding: 2px 0;
+  font-size: 9px;
+}
+
+.category-panel .category-line > div {
+  gap: 7px;
+  min-width: 0;
+}
+
+.category-panel .category-line > div span:last-child {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.category-panel .category-line strong {
+  font-size: 9px;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.category-panel .category-line small {
+  width: 30px;
+  font-size: 8px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.category-panel .text-button {
+  position: relative;
+  z-index: 2;
+  margin-top: 7px;
+  padding-top: 8px;
+  font-size: 9px;
+  color: #65a8ff;
+  font-weight: 700;
+}
+
+.category-panel .text-button:hover {
+  color: #76ffad;
+}
+
+/* A linha multicolorida da referência abaixo do donut/lista. */
+.category-panel::after {
+  content: "";
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  bottom: 34px;
+  height: 4px;
+  border-radius: 99px;
+  background:
+    linear-gradient(
+      90deg,
+      #39ef86 0 40%,
+      #168cff 40% 57%,
+      #ffb51f 57% 68%,
+      #8b78ff 68% 77%,
+      #f06da9 77% 84%,
+      #8ba0b7 84% 100%
+    );
+  opacity: .92;
+  box-shadow: 0 0 13px rgba(57,239,134,.10);
+  pointer-events: none;
+}
+
+/* ---------- Cards inferiores com a mesma linguagem visual ---------- */
+
+.bottom-grid .panel {
+  padding: 17px 18px;
+}
+
+.bottom-grid .panel:hover,
+.dashboard-grid .panel:hover {
+  border-color: rgba(115, 168, 255, .16);
+  box-shadow:
+    0 20px 48px rgba(0,0,0,.15),
+    inset 0 1px 0 rgba(255,255,255,.04);
+}
+
+/* ---------- Gráfico premium: grid e brilho sem tocar nos dados ---------- */
+
+.chart-panel {
+  background:
+    radial-gradient(circle at 38% 55%, rgba(63, 105, 164, .055), transparent 50%),
+    linear-gradient(145deg, rgba(255,255,255,.035), rgba(255,255,255,0) 60%),
+    var(--panel) !important;
+}
+
+.chart-panel .legend {
+  position: relative;
+  z-index: 3;
+  gap: 18px;
+}
+
+.chart-panel .legend span {
+  font-weight: 650;
+}
+
+.chart-panel .chart-svg {
+  filter:
+    drop-shadow(0 7px 16px rgba(47,229,138,.08))
+    drop-shadow(0 7px 16px rgba(255,95,112,.07));
+}
+
+/* ---------- Ajuste de densidade para ficar como a referência ---------- */
+
+@media (min-width: 1100px) {
+  .dashboard-premium-stat {
+    min-height: 132px;
+    padding: 15px 17px 13px;
+  }
+
+  .dashboard-premium-value {
+    font-size: 21px;
+  }
+}
+
+@media (max-width: 980px) {
+  .category-panel .category-content {
+    grid-template-columns: 135px minmax(0, 1fr);
+  }
+
+  .category-panel .donut-wrap {
+    width: 135px;
+    min-width: 135px;
+  }
+
+  .category-panel .donut {
+    width: 122px;
+    height: 122px;
+  }
+}
+
+@media (max-width: 560px) {
+  .dashboard-grid .category-panel {
+    min-height: 0;
+  }
+
+  .category-panel .category-content {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .category-panel .category-list {
+    width: 100%;
+  }
+
+  .category-panel::after {
+    bottom: 38px;
+  }
+}
+
+@media (max-width: 900px) {
+  .dashboard-premium-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-premium-spark {
+    width: 72px;
+    flex-basis: 72px;
+  }
+}
+
+@media (max-width: 560px) {
+  .dashboard-premium-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-premium-stat {
+    min-height: 118px;
+  }
+
+  .premium-chart-stage {
+    padding-left: 25px;
+  }
+
+  .premium-chart-yaxis {
+    width: 24px;
+  }
+}
+
+@media (max-width: 650px) {
+  .chart-summary {
+    gap: 7px;
+  }
+
+  .chart-summary-card {
+    padding: 8px 9px 9px;
+    border-radius: 10px;
+  }
+
+  .chart-summary-card span {
+    font-size: 7px;
+    letter-spacing: .45px;
+  }
+
+  .chart-summary-card strong {
+    font-size: 10px;
+  }
+
+  .chart-days {
+    font-size: 8px;
+  }
+}
+
+@media (max-width: 650px) {
+  .chart-summary {
+    gap: 6px;
+  }
+
+  .chart-summary > div {
+    padding: 7px 8px;
+  }
+
+  .chart-summary span {
+    font-size: 7px;
+  }
+
+  .chart-summary strong {
+    font-size: 9px;
+  }
 }
 
 /* Pequeno aumento de legibilidade somente em telas de PC */
@@ -6622,6 +8103,764 @@ button {
     margin-left: 51px;
   }
 }
+
+/* =========================================================
+   DASHBOARD REFINEMENT V4 — referência visual enviada
+   Somente acabamento dos 4 cards superiores.
+   Não altera regras de negócio nem os demais módulos.
+========================================================= */
+
+.dashboard-premium-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+
+.dashboard-premium-stat {
+  min-height: 126px;
+  height: 126px;
+  box-sizing: border-box;
+  padding: 15px 15px 13px;
+  border-radius: 15px;
+  border: 1px solid rgba(255,255,255,.085);
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.045), rgba(255,255,255,.008) 48%, rgba(0,0,0,.10)),
+    var(--panel);
+  box-shadow:
+    0 12px 30px rgba(0,0,0,.22),
+    inset 0 1px 0 rgba(255,255,255,.055),
+    inset 0 -1px 0 rgba(0,0,0,.18);
+}
+
+.app.dark .dashboard-premium-stat.green {
+  background:
+    radial-gradient(circle at 8% 105%, rgba(57,229,139,.075), transparent 48%),
+    linear-gradient(135deg, rgba(42,102,74,.22), rgba(16,25,27,.55) 62%),
+    #111a1d;
+  border-color: rgba(57,229,139,.16);
+}
+
+.app.dark .dashboard-premium-stat.red {
+  background:
+    radial-gradient(circle at 8% 105%, rgba(255,95,112,.075), transparent 48%),
+    linear-gradient(135deg, rgba(106,45,56,.22), rgba(24,22,27,.56) 62%),
+    #15191e;
+  border-color: rgba(255,95,112,.14);
+}
+
+.app.dark .dashboard-premium-stat.blue {
+  background:
+    radial-gradient(circle at 8% 105%, rgba(78,143,255,.085), transparent 48%),
+    linear-gradient(135deg, rgba(34,67,107,.25), rgba(17,24,32,.58) 62%),
+    #121a25;
+  border-color: rgba(78,143,255,.15);
+}
+
+.dashboard-premium-stat::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  border-radius: inherit;
+  background:
+    linear-gradient(115deg, rgba(255,255,255,.035), transparent 30%),
+    radial-gradient(circle at 100% 100%, rgba(255,255,255,.025), transparent 42%);
+}
+
+.dashboard-premium-stat:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255,255,255,.14);
+  box-shadow:
+    0 16px 36px rgba(0,0,0,.25),
+    inset 0 1px 0 rgba(255,255,255,.07);
+}
+
+.dashboard-premium-stat-top {
+  min-height: 38px;
+  gap: 9px;
+  align-items: center;
+}
+
+.dashboard-premium-icon {
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  border-radius: 50%;
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,.30),
+    0 0 22px rgba(255,255,255,.06);
+}
+
+.dashboard-premium-icon.green {
+  background: linear-gradient(145deg, #63ff9f 0%, #22e37e 70%, #13ca6b 100%);
+  box-shadow:
+    0 0 20px rgba(57,229,139,.20),
+    inset 0 1px 1px rgba(255,255,255,.35);
+}
+
+.dashboard-premium-icon.red {
+  background: linear-gradient(145deg, #ff777f 0%, #ff4f61 70%, #ec354d 100%);
+  box-shadow:
+    0 0 20px rgba(255,95,112,.18),
+    inset 0 1px 1px rgba(255,255,255,.32);
+}
+
+.dashboard-premium-icon.blue {
+  background: linear-gradient(145deg, #5ea3ff 0%, #387ef0 70%, #2465d8 100%);
+  box-shadow:
+    0 0 20px rgba(78,143,255,.19),
+    inset 0 1px 1px rgba(255,255,255,.32);
+}
+
+.dashboard-premium-stat-title {
+  color: #eef3f7;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 750;
+  letter-spacing: -.05px;
+}
+
+.dashboard-premium-value {
+  margin-top: 6px;
+  font-size: 21px;
+  line-height: 1.05;
+  letter-spacing: -.75px;
+  font-weight: 820;
+  text-shadow: 0 0 18px rgba(255,255,255,.025);
+}
+
+.dashboard-premium-stat.green .dashboard-premium-value {
+  color: #48ef91;
+}
+
+.dashboard-premium-stat.red .dashboard-premium-value {
+  color: #ff6878;
+}
+
+.dashboard-premium-stat.blue .dashboard-premium-value {
+  color: #54a2ff;
+}
+
+.dashboard-premium-bottom {
+  margin-top: 6px;
+  min-height: 39px;
+  align-items: flex-end;
+}
+
+.dashboard-premium-subtitle {
+  color: rgba(224,232,239,.68);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .05px;
+}
+
+.dashboard-premium-trend {
+  margin-top: 4px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .05px;
+}
+
+.dashboard-premium-trend small {
+  font-size: 8px;
+  color: rgba(224,232,239,.55);
+  font-weight: 600;
+}
+
+.dashboard-premium-spark {
+  width: 91px;
+  height: 34px;
+  flex: 0 0 91px;
+  margin-bottom: -1px;
+  opacity: 1;
+  overflow: visible;
+}
+
+.dashboard-premium-stat.green .dashboard-premium-spark {
+  color: #55f49a;
+  filter: drop-shadow(0 0 5px rgba(85,244,154,.16));
+}
+
+.dashboard-premium-stat.red .dashboard-premium-spark {
+  color: #ff6878;
+  filter: drop-shadow(0 0 5px rgba(255,104,120,.14));
+}
+
+.dashboard-premium-stat.blue .dashboard-premium-spark {
+  color: #55a5ff;
+  filter: drop-shadow(0 0 5px rgba(85,165,255,.15));
+}
+
+/* Economia: composição igual à referência — círculo à esquerda,
+   conteúdo à direita e seta no extremo direito. */
+.dashboard-premium-stat.economy-stat {
+  position: relative;
+  padding: 14px 34px 13px 78px;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-stat-top {
+  min-height: 20px;
+  display: block;
+  position: relative;
+  z-index: 4;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-icon {
+  display: none;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-stat-title {
+  display: block;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.1;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-value {
+  display: block;
+  font-size: 19px;
+  line-height: 1.05;
+  margin-top: 7px;
+  padding: 0;
+  white-space: nowrap;
+  position: relative;
+  z-index: 4;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-bottom {
+  display: block;
+  margin-top: 5px;
+  padding: 0;
+  min-height: 0;
+  position: relative;
+  z-index: 4;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-subtitle {
+  display: block;
+  color: #e7edf1;
+  font-size: 9px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.dashboard-premium-stat.economy-stat .economy-saved-label {
+  display: block;
+  margin-top: 3px;
+  color: rgba(224,232,239,.55);
+  font-size: 8px;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-ring {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 55px;
+  height: 55px;
+  margin: 0;
+  border-radius: 50%;
+  z-index: 2;
+  font-size: 11px;
+  color: #ecfff4;
+  background:
+    radial-gradient(circle at center, #121b20 58%, transparent 60%),
+    conic-gradient(#55f49a 0 var(--economy-progress, 53%), rgba(85,244,154,.11) var(--economy-progress, 53%) 100%);
+  box-shadow:
+    0 0 20px rgba(85,244,154,.12),
+    inset 0 0 8px rgba(85,244,154,.045);
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-ring::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.025);
+  pointer-events: none;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-spark {
+  position: absolute;
+  top: auto;
+  right: 30px;
+  bottom: 0;
+  left: auto;
+  width: 62px;
+  height: 23px;
+  margin: 0;
+  padding: 0;
+  transform: none;
+  opacity: .85;
+  z-index: 1;
+}
+
+.dashboard-premium-stat.economy-stat .economy-arrow {
+  right: 8px;
+  top: 50%;
+  width: 22px;
+  height: 28px;
+  font-size: 25px;
+  color: rgba(218,226,233,.72);
+  z-index: 5;
+}
+
+.dashboard-premium-stat.economy-stat .economy-arrow:hover {
+  color: #55f49a;
+}
+
+/* ===== AJUSTE FINAL: ECONOMIA ALINHADA AOS OUTROS CARDS ===== */
+.dashboard-premium-stat.economy-stat {
+  position: relative !important;
+  box-sizing: border-box !important;
+  padding: 14px 46px 13px 18px !important;
+  overflow: hidden !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-stat-top {
+  position: relative !important;
+  display: block !important;
+  min-height: 20px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  z-index: 4 !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-stat-title {
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 12px !important;
+  line-height: 1.1 !important;
+  white-space: nowrap !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-icon {
+  display: none !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-ring {
+  position: absolute !important;
+  top: 10px !important;
+  right: 42px !important;
+  left: auto !important;
+  transform: none !important;
+  width: 54px !important;
+  height: 54px !important;
+  margin: 0 !important;
+  z-index: 3 !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-value {
+  position: relative !important;
+  display: block !important;
+  margin: 7px 0 0 !important;
+  padding: 0 !important;
+  font-size: 20px !important;
+  line-height: 1.05 !important;
+  white-space: nowrap !important;
+  z-index: 4 !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-bottom {
+  position: relative !important;
+  display: block !important;
+  margin: 6px 0 0 !important;
+  padding: 0 !important;
+  min-height: 0 !important;
+  z-index: 4 !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-subtitle {
+  display: block !important;
+  margin: 0 !important;
+  font-size: 9px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+}
+
+.dashboard-premium-stat.economy-stat .economy-saved-label {
+  display: block !important;
+  margin-top: 3px !important;
+  font-size: 8px !important;
+  line-height: 1.15 !important;
+  white-space: nowrap !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-spark {
+  position: absolute !important;
+  top: auto !important;
+  right: 42px !important;
+  bottom: 7px !important;
+  left: auto !important;
+  width: 72px !important;
+  height: 22px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transform: none !important;
+  z-index: 2 !important;
+  pointer-events: none !important;
+}
+
+.dashboard-premium-stat.economy-stat .economy-arrow {
+  position: absolute !important;
+  right: 9px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  z-index: 8 !important;
+}
+
+/* ===== FIM DO AJUSTE FINAL ===== */
+
+/* Evita qualquer aparência lavada no tema claro. */
+.app:not(.dark) .dashboard-premium-stat {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.98), rgba(246,249,252,.96)),
+    #fff;
+  border-color: rgba(100,116,139,.13);
+  box-shadow:
+    0 12px 30px rgba(31,41,55,.07),
+    inset 0 1px 0 rgba(255,255,255,.95);
+}
+
+@media (max-width: 1050px) {
+  .dashboard-premium-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 580px) {
+  .dashboard-premium-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-premium-stat {
+    height: 118px;
+    min-height: 118px;
+  }
+}
+
+
+
+.economy-stat {
+  position: relative !important;
+}
+
+.economy-stat .dashboard-premium-spark {
+  position: absolute !important;
+  right: 42px !important;
+  bottom: 9px !important;
+  top: auto !important;
+  left: auto !important;
+  width: 74px !important;
+  height: 23px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transform: none !important;
+  flex: none !important;
+  z-index: 1 !important;
+}
+
+
+/* ===== ECONOMIA — AJUSTE VISUAL FINAL ===== */
+.dashboard-premium-stat.economy-stat {
+  position: relative !important;
+  box-sizing: border-box !important;
+  padding: 14px 48px 13px 18px !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-stat-top {
+  display: block !important;
+  position: relative !important;
+  min-height: 20px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  z-index: 4 !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-icon {
+  display: none !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-stat-title {
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 10px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-ring {
+  position: absolute !important;
+  top: 10px !important;
+  right: 42px !important;
+  left: auto !important;
+  transform: none !important;
+  width: 54px !important;
+  height: 54px !important;
+  margin: 0 !important;
+  z-index: 3 !important;
+  font-size: 11px !important;
+  display: grid !important;
+  place-items: center !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-value {
+  display: block !important;
+  position: relative !important;
+  z-index: 4 !important;
+  margin: 7px 0 0 !important;
+  padding: 0 !important;
+  max-width: calc(100% - 76px) !important;
+  font-size: 20px !important;
+  line-height: 1.05 !important;
+  white-space: nowrap !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-bottom {
+  display: block !important;
+  position: static !important;
+  z-index: 4 !important;
+  margin: 6px 0 0 !important;
+  padding: 0 !important;
+  min-height: 0 !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-subtitle {
+  display: block !important;
+  margin: 0 !important;
+  font-size: 9px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+}
+
+.dashboard-premium-stat.economy-stat .economy-saved-label {
+  display: block !important;
+  margin-top: 3px !important;
+  font-size: 8px !important;
+  line-height: 1.15 !important;
+  white-space: nowrap !important;
+}
+
+.dashboard-premium-stat.economy-stat .dashboard-premium-spark {
+  position: absolute !important;
+  top: auto !important;
+  right: 42px !important;
+  bottom: 8px !important;
+  left: auto !important;
+  width: 74px !important;
+  height: 23px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transform: none !important;
+  flex: none !important;
+  z-index: 1 !important;
+  pointer-events: none !important;
+}
+
+.dashboard-premium-stat.economy-stat .economy-arrow {
+  position: absolute !important;
+  top: 50% !important;
+  right: 9px !important;
+  transform: translateY(-50%) !important;
+  z-index: 8 !important;
+}
+
+
+/* =========================================================
+   TEMA CLARO — CONTRASTE E LEGIBILIDADE
+   Não altera o tema escuro.
+   ========================================================= */
+
+.app:not(.dark) {
+  --bg: #f5f7fa;
+  --sidebar: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f8fafc;
+  --text: #182230;
+  --muted: #5f6d7e;
+  --border: #d7e0e9;
+  --hover: #edf3f7;
+  --shadow: 0 12px 35px rgba(31, 41, 55, .08);
+}
+
+.app:not(.dark) .dashboard-premium-stat,
+.app:not(.dark) .panel,
+.app:not(.dark) .stat-card,
+.app:not(.dark) .chart-panel,
+.app:not(.dark) .category-panel,
+.app:not(.dark) .table-panel,
+.app:not(.dark) .card,
+.app:not(.dark) .modal {
+  border-color: #d7e0e9 !important;
+  box-shadow:
+    0 10px 28px rgba(31, 41, 55, .07),
+    inset 0 1px 0 rgba(255,255,255,.9) !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat {
+  background:
+    radial-gradient(circle at 85% 110%, rgba(32,201,120,.07), transparent 48%),
+    #ffffff !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat-title,
+.app:not(.dark) .dashboard-premium-subtitle,
+.app:not(.dark) .dashboard-premium-trend small,
+.app:not(.dark) .panel-subtitle,
+.app:not(.dark) .eyebrow,
+.app:not(.dark) .muted,
+.app:not(.dark) .helper,
+.app:not(.dark) .form-help {
+  color: #536273 !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.green .dashboard-premium-value {
+  color: #16a765 !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.red .dashboard-premium-value {
+  color: #e54858 !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.blue .dashboard-premium-value {
+  color: #2476d8 !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.green .dashboard-premium-trend {
+  color: #12995b !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.red .dashboard-premium-trend {
+  color: #d83d4d !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.blue .dashboard-premium-trend {
+  color: #2476d8 !important;
+}
+
+.app:not(.dark) .dashboard-premium-spark {
+  opacity: 1 !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.green .dashboard-premium-spark {
+  color: #16b86d !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.red .dashboard-premium-spark {
+  color: #ed5363 !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.blue .dashboard-premium-spark {
+  color: #3284e4 !important;
+}
+
+.app:not(.dark) .dashboard-premium-ring {
+  color: #233142 !important;
+  background:
+    radial-gradient(circle at center, #ffffff 58%, transparent 60%),
+    conic-gradient(#16b86d 0 var(--economy-progress, 53%), #dce7e0 var(--economy-progress, 53%) 100%) !important;
+}
+
+.app:not(.dark) .sidebar {
+  background: #ffffff !important;
+  border-right-color: #d7e0e9 !important;
+}
+
+.app:not(.dark) .nav-item {
+  color: #344254 !important;
+}
+
+.app:not(.dark) .nav-item:hover,
+.app:not(.dark) .nav-item.active {
+  color: #11985b !important;
+}
+
+.app:not(.dark) .nav-item.active {
+  background: rgba(22,184,109,.10) !important;
+}
+
+.app:not(.dark) .menu-label,
+.app:not(.dark) .brand span {
+  color: #667486 !important;
+}
+
+.app:not(.dark) .page-heading h1,
+.app:not(.dark) h1,
+.app:not(.dark) h2,
+.app:not(.dark) h3,
+.app:not(.dark) strong {
+  color: #182230;
+}
+
+.app:not(.dark) .btn.secondary,
+.app:not(.dark) .btn.ghost,
+.app:not(.dark) .month-select,
+.app:not(.dark) .select,
+.app:not(.dark) input,
+.app:not(.dark) textarea,
+.app:not(.dark) select {
+  color: #263445 !important;
+  background: #ffffff !important;
+  border-color: #cfd9e4 !important;
+}
+
+.app:not(.dark) input::placeholder,
+.app:not(.dark) textarea::placeholder {
+  color: #7a8796 !important;
+}
+
+.app:not(.dark) .btn.secondary:hover,
+.app:not(.dark) .btn.ghost:hover,
+.app:not(.dark) .month-select:hover {
+  background: #f0f4f8 !important;
+}
+
+.app:not(.dark) .table th,
+.app:not(.dark) .table td,
+.app:not(.dark) .investment-row,
+.app:not(.dark) .bill-row,
+.app:not(.dark) .transaction-row {
+  border-color: #dfe6ed !important;
+}
+
+.app:not(.dark) .table th,
+.app:not(.dark) .list-subtitle,
+.app:not(.dark) .investment-row span,
+.app:not(.dark) .bill-row span {
+  color: #5b6979 !important;
+}
+
+/* Popovers/tooltips ficam acima dos cards e com contraste real no tema claro. */
+.app:not(.dark) .nav-hover-info,
+.app:not(.dark) .popover,
+.app:not(.dark) .tooltip,
+.app:not(.dark) .dropdown,
+.app:not(.dark) .modal {
+  background: #ffffff !important;
+  color: #182230 !important;
+  border-color: #d4dee8 !important;
+  box-shadow: 0 18px 42px rgba(31,41,55,.14) !important;
+}
+
+/* Ícones coloridos continuam fortes, mas o fundo não fica lavado. */
+.app:not(.dark) .dashboard-premium-icon.green {
+  color: #07351f !important;
+}
+
+.app:not(.dark) .dashboard-premium-icon.red,
+.app:not(.dark) .dashboard-premium-icon.blue {
+  color: #ffffff !important;
+}
+
 `;
 
 function StyleInjector() {
