@@ -1,3 +1,6 @@
+
+
+
 "use client";
 
 import { supabase } from "@/utils/client";
@@ -8539,9 +8542,15 @@ button {
     grid-template-columns: 1fr;
   }
 
+  /* Mobile: aumenta somente a altura dos cards para que
+     subtítulo e indicador inferior nunca sejam cortados. */
   .dashboard-premium-stat {
-    height: 118px;
-    min-height: 118px;
+    height: 150px !important;
+    min-height: 150px !important;
+  }
+
+  .dashboard-premium-stat .dashboard-premium-bottom {
+    min-height: 39px;
   }
 }
 
