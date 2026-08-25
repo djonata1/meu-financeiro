@@ -1,6 +1,3 @@
-
-
-
 "use client";
 
 import { supabase } from "@/utils/client";
@@ -23,7 +20,8 @@ type Page =
   | "goals"
   | "investments"
   | "reports"
-  | "settings";
+  | "settings"
+  | "calculator";
 
 type TransactionType = "income" | "expense";
 
@@ -254,10 +252,10 @@ const initialGoals: Goal[] = [
 ];
 
 const initialInvestments: Investment[] = [
-  { id: 1, name: "Bitcoin", invested: 2500, value: 2500 },
-  { id: 2, name: "Ethereum", invested: 1800, value: 1800 },
-  { id: 3, name: "Renda fixa", invested: 2650, value: 2650 },
-  { id: 4, name: "Ações", invested: 1500, value: 1500 },
+  { id: 1, name: "Bitcoin", invested: 2500, value: 2800 },
+  { id: 2, name: "Ethereum", invested: 1800, value: 2000 },
+  { id: 3, name: "Renda fixa", invested: 2650, value: 2750 },
+  { id: 4, name: "Ações", invested: 1500, value: 1600 },
 ];
 
 function money(value: number) {
@@ -297,6 +295,20 @@ const MONTH_MARKER = "__MEU_FINANCEIRO_MONTH_START__";
 
 function monthKeyFromDate(date: string) {
   return date ? date.slice(0, 7) : "";
+}
+
+function previousMonthKey(month: string) {
+  if (!month) return "";
+  const [year, monthNumber] = month.split("-").map(Number);
+  const previous = new Date(year, monthNumber - 2, 1);
+  return `${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function percentChange(current: number, previous: number | null) {
+  if (previous === null) return null;
+  if (previous === 0) return current === 0 ? "0,0%" : "Novo";
+  const change = ((current - previous) / Math.abs(previous)) * 100;
+  return `${change >= 0 ? "+" : ""}${change.toFixed(1).replace(".", ",")}%`;
 }
 
 function isMonthMarker(transaction: Transaction) {
@@ -404,6 +416,12 @@ function Icon({
         <path d="M4 19V5" />
         <path d="M4 19h16" />
         <path d="m7 15 4-4 3 2 5-7" />
+      </>
+    ),
+    calculator: (
+      <>
+        <rect x="5" y="3" width="14" height="18" rx="2" />
+        <path d="M8 7h8M8 11h2M14 11h2M8 15h2M14 15h2M8 18h2M14 18h2" />
       </>
     ),
     settings: (
@@ -595,30 +613,21 @@ function MiniChart({
     };
   });
 
-  // Curva Bézier suave, mantendo os valores reais de cada dia.
+  // Curva premium: ondulação suave sem ultrapassar os valores reais.
+  // Os controles ficam na mesma altura dos pontos para evitar picos artificiais.
   const makeSmoothPath = (key: "incomeY" | "expenseY") => {
     if (!coords.length) return "";
-
-    if (coords.length === 1) {
-      return `M ${coords[0].x} ${coords[0][key]}`;
-    }
+    if (coords.length === 1) return `M ${coords[0].x} ${coords[0][key]}`;
 
     let path = `M ${coords[0].x} ${coords[0][key]}`;
 
     for (let index = 1; index < coords.length; index += 1) {
       const previous = coords[index - 1];
       const current = coords[index];
-      const next = coords[index + 1] ?? current;
+      const distance = current.x - previous.x;
+      const controlOffset = distance * 0.42;
 
-      const cp1x = previous.x + (current.x - (coords[index - 2]?.x ?? previous.x)) / 6;
-      const cp1y =
-        previous[key] +
-        (current[key] - (coords[index - 2]?.[key] ?? previous[key])) / 6;
-
-      const cp2x = current.x - (next.x - previous.x) / 6;
-      const cp2y = current[key] - (next[key] - previous[key]) / 6;
-
-      path += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${current.x} ${current[key]}`;
+      path += ` C ${previous.x + controlOffset} ${previous[key]}, ${current.x - controlOffset} ${current[key]}, ${current.x} ${current[key]}`;
     }
 
     return path;
@@ -762,8 +771,8 @@ function MiniChart({
                 y2={y}
                 stroke={dark ? "#253449" : "#dce5ef"}
                 strokeWidth="1"
-                strokeDasharray="2 8"
-                opacity={dark ? ".8" : ".9"}
+                strokeDasharray="3 9"
+                opacity={dark ? ".62" : ".72"}
               />
             );
           })}
@@ -1526,6 +1535,56 @@ export default function Home() {
   // Economia é exatamente o resultado do mês: positiva ou negativa.
   const economy = balance;
 
+  const previousMonth = previousMonthKey(viewMonth);
+
+  const previousMonthMetrics = useMemo(() => {
+    if (!previousMonth) return null;
+
+    const previousTransactions = transactions.filter(
+      (item) => !isMonthMarker(item) && monthKeyFromDate(item.date) === previousMonth
+    );
+
+    const previousBills = bills.filter(
+      (bill) => monthKeyFromDate(bill.dueDate) === previousMonth && bill.paid
+    );
+
+    const previousIncome = previousTransactions
+      .filter((item) => item.type === "income")
+      .reduce((sum, item) => sum + item.amount, 0);
+
+    const previousExpenses =
+      previousTransactions
+        .filter((item) => item.type === "expense")
+        .reduce((sum, item) => sum + item.amount, 0) +
+      previousBills.reduce((sum, bill) => sum + bill.amount, 0);
+
+    const previousBalance = previousIncome - previousExpenses;
+
+    return {
+      income: previousIncome,
+      expenses: previousExpenses,
+      balance: previousBalance,
+      economy: previousBalance,
+    };
+  }, [transactions, bills, previousMonth]);
+
+  const incomeTrend = percentChange(
+    income,
+    previousMonthMetrics ? previousMonthMetrics.income : null
+  );
+  const expensesTrend = percentChange(
+    expenses,
+    previousMonthMetrics ? previousMonthMetrics.expenses : null
+  );
+  const balanceTrend = percentChange(
+    balance,
+    previousMonthMetrics ? previousMonthMetrics.balance : null
+  );
+  const economyTrend = percentChange(
+    economy,
+    previousMonthMetrics ? previousMonthMetrics.economy : null
+  );
+
   const pendingBills = useMemo(
     () =>
       viewBills
@@ -2063,6 +2122,7 @@ export default function Home() {
     investments: "Investimentos",
     reports: "Relatórios",
     settings: "Configurações",
+    calculator: "Calculadora",
   };
 
   const displayName =
@@ -2178,6 +2238,13 @@ export default function Home() {
               `Despesas • ${money(expenses)}`,
               `Resultado • ${money(income - expenses)}`,
             ]}
+          />
+
+          <NavItem
+            active={page === "calculator"}
+            icon="calculator"
+            label="Calculadora"
+            onClick={() => navigate("calculator")}
           />
         </nav>
 
@@ -2372,6 +2439,10 @@ export default function Home() {
               selectedMonth={viewMonth}
               availableMonths={availableMonths}
               onMonthChange={setViewMonth}
+              incomeTrend={incomeTrend}
+              expensesTrend={expensesTrend}
+              balanceTrend={balanceTrend}
+              economyTrend={economyTrend}
             />
           )}
 
@@ -2452,8 +2523,11 @@ export default function Home() {
               income={income}
               expenses={expenses}
               transactions={viewTransactions}
+              currentMonth={currentMonth}
             />
           )}
+
+          {page === "calculator" && <CalculatorPage dark={dark} />}
 
           {page === "settings" && (
             <SettingsPage
@@ -3315,6 +3389,10 @@ function Dashboard({
   selectedMonth,
   availableMonths,
   onMonthChange,
+  incomeTrend,
+  expensesTrend,
+  balanceTrend,
+  economyTrend,
 }: {
   dark: boolean;
   income: number;
@@ -3336,11 +3414,14 @@ function Dashboard({
   selectedMonth: string;
   availableMonths: string[];
   onMonthChange: (month: string) => void;
+  incomeTrend: string | null;
+  expensesTrend: string | null;
+  balanceTrend: string | null;
+  economyTrend: string | null;
 }) {
-  const economy =
-    income > 0
-      ? Math.max(0, Math.round(((income - expenses) / income) * 100))
-      : 0;
+  const economy = income - expenses;
+  const economyRate = income > 0 ? (economy / income) * 100 : 0;
+  const economyRingValue = Math.min(100, Math.abs(economyRate));
 
   return (
     <>
@@ -3379,7 +3460,7 @@ function Dashboard({
           subtitle="Receitas deste mês"
           icon="arrowUp"
           type="green"
-          trend="+18,6%"
+          trend={incomeTrend}
           points={[28, 35, 31, 44, 39, 51, 47, 62]}
         />
 
@@ -3389,7 +3470,7 @@ function Dashboard({
           subtitle="Despesas deste mês"
           icon="arrowDown"
           type="red"
-          trend="-6,2%"
+          trend={expensesTrend}
           points={[34, 28, 39, 32, 47, 41, 54, 50]}
         />
 
@@ -3399,19 +3480,20 @@ function Dashboard({
           subtitle="Resultado do mês"
           icon="wallet"
           type="blue"
-          trend={`${balance >= 0 ? "+" : ""}${economy}%`}
+          trend={balanceTrend}
           points={[22, 29, 26, 38, 34, 45, 41, 55]}
         />
 
         <DashboardPremiumStat
           title="Economia"
           value={money(economy)}
-          subtitle="Você economizou"
+          subtitle={economy < 0 ? "Você ficou no negativo" : "Você economizou"}
           icon="card"
           type={economy < 0 ? "red" : "green"}
-          trend={`${income > 0 ? ((economy / income) * 100).toFixed(1) : "0.0"}%`}
+          trend={economyTrend}
           points={[20, 25, 24, 33, 31, 40, 38, 48]}
           ring
+          ringValue={economyRingValue}
         />
       </div>
 
@@ -3620,15 +3702,17 @@ function DashboardPremiumStat({
   trend,
   points,
   ring = false,
+  ringValue: providedRingValue,
 }: {
   title: string;
   value: string;
   subtitle: string;
   icon: string;
   type: "green" | "red" | "blue";
-  trend: string;
+  trend: string | null;
   points: number[];
   ring?: boolean;
+  ringValue?: number;
 }) {
   const line = points
     .map((point, index) => {
@@ -3638,7 +3722,7 @@ function DashboardPremiumStat({
     })
     .join(" ");
 
-  const rawRingValue = Number.parseFloat(trend) || 0;
+  const rawRingValue = providedRingValue ?? 0;
   const ringValue = Math.max(0, Math.min(100, Math.abs(rawRingValue)));
   const ringColor = type === "red" ? "#ff6b6b" : "#57ef92";
 
@@ -3676,8 +3760,9 @@ function DashboardPremiumStat({
               da sua receita
             </span>
           ) : (
-            <span className="dashboard-premium-trend">
-              {trend} <small>vs mês anterior</small>
+            <span className={`dashboard-premium-trend ${trend === null ? "no-history" : ""}`}>
+              {trend === null ? "Primeiro mês" : trend}
+              {trend !== null && <small>vs mês anterior</small>}
             </span>
           )}
         </div>
@@ -3828,8 +3913,8 @@ function TransactionRow({
       : item.category === "Transporte"
       ? "🚗"
       : item.type === "income"
-      ? "↓"
-      : "•";
+      ? "↑"
+      : "↓";
 
   return (
     <div className="transaction-row">
@@ -3938,8 +4023,8 @@ function TransactionsPage({
                   <Icon
                     name={
                       item.type === "income"
-                        ? "arrowDown"
-                        : "arrowUp"
+                        ? "arrowUp"
+                        : "arrowDown"
                     }
                     size={16}
                   />
@@ -4556,6 +4641,135 @@ function GoalsPage({
    INVESTIMENTOS
 ========================================================= */
 
+function InvestmentChart({
+  dark,
+  investments,
+}: {
+  dark: boolean;
+  investments: Investment[];
+}) {
+  const [activePoint, setActivePoint] = useState<number | null>(null);
+  const chartId = useId().replace(/:/g, "");
+  const width = 760;
+  const height = 300;
+  const padding = { top: 20, right: 18, bottom: 38, left: 8 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const maxValue = Math.max(1, ...investments.flatMap((item) => [item.invested, item.value]));
+  const visualMax = maxValue * 1.16;
+
+  const points = investments.map((item, index) => ({
+    x: investments.length <= 1
+      ? width / 2
+      : padding.left + (index / (investments.length - 1)) * innerWidth,
+    investedY: padding.top + innerHeight - (item.invested / visualMax) * innerHeight,
+    valueY: padding.top + innerHeight - (item.value / visualMax) * innerHeight,
+  }));
+
+  const smoothPath = (key: "investedY" | "valueY") => {
+    if (!points.length) return "";
+    if (points.length === 1) return `M ${points[0].x} ${points[0][key]}`;
+    let path = `M ${points[0].x} ${points[0][key]}`;
+    for (let index = 1; index < points.length; index += 1) {
+      const previous = points[index - 1];
+      const current = points[index];
+      const next = points[index + 1] ?? current;
+      const before = points[index - 2] ?? previous;
+      const cp1x = previous.x + (current.x - before.x) / 6;
+      const cp1y = previous[key] + (current[key] - before[key]) / 6;
+      const cp2x = current.x - (next.x - previous.x) / 6;
+      const cp2y = current[key] - (next[key] - previous[key]) / 6;
+      path += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${current.x} ${current[key]}`;
+    }
+    return path;
+  };
+
+  const currentPath = smoothPath("valueY");
+  const investedPath = smoothPath("investedY");
+  const baselineY = padding.top + innerHeight;
+  const currentArea = investments.length
+    ? `${currentPath} L ${points[points.length - 1].x} ${baselineY} L ${points[0].x} ${baselineY} Z`
+    : "";
+
+  return (
+    <div className="investment-chart-wrap">
+      <div className="investment-chart-legend">
+        <span><i className="dot green" /> Valor atual</span>
+        <span><i className="dot blue" /> Valor investido</span>
+      </div>
+
+      {!investments.length ? (
+        <div className="empty-state">Cadastre um investimento para visualizar o gráfico.</div>
+      ) : (
+        <svg
+          className="investment-chart-svg"
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          onPointerLeave={(event) => {
+            if (event.pointerType === "mouse") setActivePoint(null);
+          }}
+        >
+          <defs>
+            <linearGradient id={`investmentArea-${chartId}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#39e58b" stopOpacity=".25" />
+              <stop offset="100%" stopColor="#39e58b" stopOpacity="0" />
+            </linearGradient>
+            <filter id={`investmentGlow-${chartId}`} x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+            </filter>
+          </defs>
+
+          {[0.25, 0.5, 0.75, 1].map((ratio) => {
+            const y = padding.top + innerHeight - innerHeight * ratio;
+            return <line key={ratio} x1={padding.left} x2={width - padding.right} y1={y} y2={y} stroke={dark ? "#253449" : "#dce5ef"} strokeDasharray="2 8" />;
+          })}
+
+          <path d={currentArea} fill={`url(#investmentArea-${chartId})`} />
+          <path d={investedPath} fill="none" stroke="#5d95ff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" opacity=".85" />
+          <path d={currentPath} fill="none" stroke="#39e58b" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" filter={`url(#investmentGlow-${chartId})`} />
+
+          {points.map((point, index) => {
+            const item = investments[index];
+            const active = activePoint === index;
+            return (
+              <g key={item.id}>
+                <rect
+                  x={Math.max(0, point.x - 34)}
+                  y={0}
+                  width={68}
+                  height={height}
+                  fill="transparent"
+                  onPointerEnter={(event) => { if (event.pointerType === "mouse") setActivePoint(index); }}
+                  onPointerMove={() => setActivePoint(index)}
+                  onPointerDown={(event) => { event.preventDefault(); setActivePoint(index); }}
+                />
+                <circle cx={point.x} cy={point.valueY} r={active ? 6 : 4} fill={dark ? "#0c1622" : "#fff"} stroke="#39e58b" strokeWidth={active ? 2.5 : 2} />
+                <circle cx={point.x} cy={point.investedY} r={active ? 5 : 3} fill={dark ? "#0c1622" : "#fff"} stroke="#5d95ff" strokeWidth="1.8" />
+                <text x={point.x} y={height - 13} textAnchor="middle" fill={dark ? "#9aa9bb" : "#64748b"} fontSize="9" fontWeight="700">
+                  {item.name.length > 12 ? `${item.name.slice(0, 11)}…` : item.name}
+                </text>
+                {active && (
+                  <g transform={`translate(${Math.min(Math.max(point.x - 94, 5), width - 194)}, ${Math.max(Math.min(Math.min(point.valueY, point.investedY) - 86, height - 96), 5)})`} pointerEvents="none">
+                    <rect width="188" height="82" rx="13" fill={dark ? "#0b1522" : "#fff"} fillOpacity=".98" stroke={dark ? "#30445d" : "#d5dfeb"} />
+                    <text x="13" y="19" fill={dark ? "#9aa9bb" : "#64748b"} fontSize="9" fontWeight="700">{item.name}</text>
+                    <circle cx="14" cy="38" r="3" fill="#39e58b" />
+                    <text x="23" y="41" fill={dark ? "#e9f2ec" : "#263243"} fontSize="9.5" fontWeight="700">Atual</text>
+                    <text x="174" y="41" textAnchor="end" fill="#39e58b" fontSize="9.5" fontWeight="800">{money(item.value)}</text>
+                    <circle cx="14" cy="59" r="3" fill="#5d95ff" />
+                    <text x="23" y="62" fill={dark ? "#e9edf2" : "#263243"} fontSize="9.5" fontWeight="700">Investido</text>
+                    <text x="174" y="62" textAnchor="end" fill="#5d95ff" fontSize="9.5" fontWeight="800">{money(item.invested)}</text>
+                  </g>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      )}
+    </div>
+  );
+}
+
 function InvestmentsPage({
   dark,
   investments,
@@ -4626,7 +4840,7 @@ function InvestmentsPage({
             subtitle="Carteira atual"
           />
 
-          <MiniChart dark={dark} />
+          <InvestmentChart dark={dark} investments={investments} />
         </section>
 
         <section className="panel">
@@ -4725,11 +4939,13 @@ function ReportsPage({
   income,
   expenses,
   transactions,
+  currentMonth,
 }: {
   dark: boolean;
   income: number;
   expenses: number;
   transactions: Transaction[];
+  currentMonth: string;
 }) {
   const categories = transactions
     .filter((item) => item.type === "expense")
@@ -4823,9 +5039,147 @@ function ReportsPage({
             subtitle="Comparativo mensal"
           />
 
-          <MiniChart dark={dark} />
+          <div className="report-flow-chart">
+            <MiniChart
+              dark={dark}
+              interactive
+              transactions={transactions}
+              month={currentMonth}
+            />
+          </div>
         </section>
       </div>
+    </>
+  );
+}
+
+/* =========================================================
+   CALCULADORA
+========================================================= */
+
+function CalculatorPage({ dark }: { dark: boolean }) {
+  const [display, setDisplay] = useState("0");
+  const [storedValue, setStoredValue] = useState<number | null>(null);
+  const [operator, setOperator] = useState<string | null>(null);
+  const [waitingForOperand, setWaitingForOperand] = useState(false);
+
+  const inputDigit = (digit: string) => {
+    if (waitingForOperand) {
+      setDisplay(digit);
+      setWaitingForOperand(false);
+      return;
+    }
+
+    setDisplay((current) => (current === "0" ? digit : `${current}${digit}`));
+  };
+
+  const inputDecimal = () => {
+    if (waitingForOperand) {
+      setDisplay("0,");
+      setWaitingForOperand(false);
+      return;
+    }
+    if (!display.includes(",")) setDisplay((current) => `${current},`);
+  };
+
+  const clear = () => {
+    setDisplay("0");
+    setStoredValue(null);
+    setOperator(null);
+    setWaitingForOperand(false);
+  };
+
+  const calculate = (left: number, right: number, op: string) => {
+    if (op === "+") return left + right;
+    if (op === "−") return left - right;
+    if (op === "×") return left * right;
+    if (op === "÷") return right === 0 ? 0 : left / right;
+    return right;
+  };
+
+  const chooseOperator = (nextOperator: string) => {
+    const inputValue = Number(display.replace(",", "."));
+    if (!Number.isFinite(inputValue)) return;
+
+    if (storedValue !== null && operator && !waitingForOperand) {
+      const result = calculate(storedValue, inputValue, operator);
+      setStoredValue(result);
+      setDisplay(String(Number(result.toFixed(10))).replace(".", ","));
+    } else {
+      setStoredValue(inputValue);
+    }
+
+    setOperator(nextOperator);
+    setWaitingForOperand(true);
+  };
+
+  const equals = () => {
+    if (storedValue === null || !operator) return;
+    const inputValue = Number(display.replace(",", "."));
+    const result = calculate(storedValue, inputValue, operator);
+    setDisplay(String(Number(result.toFixed(10))).replace(".", ","));
+    setStoredValue(null);
+    setOperator(null);
+    setWaitingForOperand(true);
+  };
+
+  const percent = () => {
+    const value = Number(display.replace(",", "."));
+    if (!Number.isFinite(value)) return;
+    const result = value / 100;
+    setDisplay(String(Number(result.toFixed(10))).replace(".", ","));
+  };
+
+  const toggleSign = () => {
+    if (display === "0") return;
+    setDisplay((current) => (current.startsWith("-") ? current.slice(1) : `-${current}`));
+  };
+
+  const buttons = [
+    ["C", "clear"], ["±", "sign"], ["%", "percent"], ["÷", "operator"],
+    ["7", "digit"], ["8", "digit"], ["9", "digit"], ["×", "operator"],
+    ["4", "digit"], ["5", "digit"], ["6", "digit"], ["−", "operator"],
+    ["1", "digit"], ["2", "digit"], ["3", "digit"], ["+", "operator"],
+    ["0", "digit wide"], [",", "decimal"], ["=", "equals"],
+  ] as const;
+
+  return (
+    <>
+      <div className="page-heading">
+        <div>
+          <p className="eyebrow">FERRAMENTAS</p>
+          <h1>Calculadora</h1>
+          <p>Faça contas rápidas sem sair do seu financeiro.</p>
+        </div>
+      </div>
+
+      <section className="calculator-panel panel">
+        <div className="calculator-display" aria-live="polite">
+          <span>{operator ? `${operator}` : ""}</span>
+          <strong>{display}</strong>
+        </div>
+
+        <div className="calculator-grid">
+          {buttons.map(([label, kind]) => (
+            <button
+              type="button"
+              key={label}
+              className={`calculator-key ${kind} ${dark ? "" : "light"}`}
+              onClick={() => {
+                if (kind === "clear") clear();
+                else if (kind === "sign") toggleSign();
+                else if (kind === "percent") percent();
+                else if (kind === "decimal") inputDecimal();
+                else if (kind === "equals") equals();
+                else if (kind === "operator") chooseOperator(label);
+                else inputDigit(label);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </section>
     </>
   );
 }
@@ -8685,6 +9039,204 @@ button {
 
 
 /* =========================================================
+   AJUSTES FUNCIONAIS — MOBILE + CALCULADORA + INVESTIMENTOS
+========================================================= */
+
+.dashboard-premium-trend.no-history {
+  color: var(--muted) !important;
+  font-weight: 650;
+}
+
+.investment-chart-wrap {
+  position: relative;
+  width: 100%;
+  min-height: 260px;
+  margin-top: 4px;
+}
+
+.investment-chart-legend {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  margin: 5px 0 4px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.investment-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.investment-chart-svg {
+  display: block;
+  width: 100%;
+  height: 250px;
+  overflow: visible;
+  touch-action: pan-y;
+}
+
+.calculator-panel {
+  width: min(430px, 100%);
+  padding: 18px;
+  margin: 0 auto;
+}
+
+.calculator-display {
+  min-height: 108px;
+  padding: 18px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(255,255,255,.035), transparent 60%), var(--panel-2);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.calculator-display span {
+  min-height: 14px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.calculator-display strong {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-size: 34px;
+  line-height: 1.05;
+  letter-spacing: -1px;
+}
+
+.calculator-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.calculator-key {
+  min-height: 56px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 750;
+  transition: transform .12s ease, border-color .12s ease, background .12s ease;
+}
+
+.calculator-key:hover {
+  border-color: rgba(47,229,138,.35);
+  background: var(--hover);
+}
+
+.calculator-key:active { transform: scale(.97); }
+.calculator-key.operator,
+.calculator-key.equals {
+  color: #07150e;
+  border-color: transparent;
+  background: linear-gradient(145deg, #59f59a, #24d879);
+}
+
+.calculator-key.clear { color: var(--red); }
+.calculator-key.percent,
+.calculator-key.sign { color: var(--blue); }
+.calculator-key.wide { grid-column: span 2; }
+
+@media (max-width: 580px) {
+  /* No celular em pé a tabela vira uma grade compacta, sem alterar o PC. */
+  .table {
+    overflow: visible;
+  }
+
+  .table-head {
+    display: none;
+  }
+
+  .table-row {
+    min-width: 0 !important;
+    width: 100%;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    grid-template-areas:
+      "description value"
+      "category account"
+      "date action";
+    gap: 7px 10px !important;
+    align-items: center;
+    padding: 12px 2px !important;
+  }
+
+  .table-row > :nth-child(1) { grid-area: description; min-width: 0; }
+  .table-row > :nth-child(2) { grid-area: category; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .table-row > :nth-child(3) { grid-area: account; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .table-row > :nth-child(4) { grid-area: date; }
+  .table-row > :nth-child(5) { grid-area: value; text-align: right; white-space: nowrap; }
+  .table-row > :nth-child(6) { grid-area: action; justify-self: end; }
+
+  .table-description {
+    min-width: 0;
+  }
+
+  .table-description strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .table-row > span {
+    font-size: 9px;
+  }
+
+  .table-row > strong {
+    font-size: 10px;
+  }
+
+  .premium-chart-stage {
+    padding-left: 62px !important;
+  }
+
+  .premium-chart-yaxis {
+    width: 58px !important;
+    left: 0 !important;
+  }
+
+  .premium-chart-yaxis span {
+    font-size: 7px !important;
+    text-align: right;
+    padding-right: 4px;
+  }
+
+  .chart-days {
+    font-size: 8px;
+    padding-left: 62px;
+  }
+
+  .investment-chart-svg {
+    height: 225px;
+  }
+
+  .calculator-panel {
+    padding: 14px;
+  }
+
+  .calculator-display {
+    min-height: 94px;
+  }
+
+  .calculator-display strong {
+    font-size: 30px;
+  }
+}
+
+/* =========================================================
    TEMA CLARO — CONTRASTE E LEGIBILIDADE
    Não altera o tema escuro.
    ========================================================= */
@@ -8869,6 +9421,61 @@ button {
 .app:not(.dark) .dashboard-premium-icon.blue {
   color: #ffffff !important;
 }
+
+
+/* Ajustes de leitura e gráfico premium — somente desktop */
+@media (min-width: 769px) {
+  /* Aumenta apenas textos/números que estavam pequenos. */
+  .stat-top > span { font-size: 12px; }
+  .stat-value { font-size: 23px; }
+  .stat-subtitle { font-size: 11px; }
+  .panel-header h2 { font-size: 16px; }
+  .panel-header p { font-size: 11px; }
+  .panel-action { font-size: 11px; }
+  .report-category > div:first-child { font-size: 11px; }
+  .report-category small { font-size: 10px; }
+  .chart-summary-card span { font-size: 10px; }
+  .chart-summary-card strong { font-size: 15px; }
+  .premium-chart-yaxis span { font-size: 10px; }
+  .chart-days { font-size: 11px; }
+  .investment-row span { font-size: 10px; }
+  .transaction-date { font-size: 11px; }
+  .transaction-row .amount { font-size: 12px; }
+  .table-row > span { font-size: 11px; }
+  .table-row > strong { font-size: 12px; }
+  .table-description strong { font-size: 12px; }
+  .category-line span { font-size: 11px; }
+  .category-line strong { font-size: 12px; }
+  .category-line small { font-size: 10px; }
+}
+
+/* Gráfico de Relatórios: visual de área premium, mais limpo e suave. */
+.report-flow-chart {
+  position: relative;
+  width: 100%;
+  padding-top: 4px;
+}
+
+.report-flow-chart .chart-real-data .chart-svg {
+  min-height: 300px;
+}
+
+.report-flow-chart .chart-real-data .chart-summary-card {
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+}
+
+.report-flow-chart .chart-real-data .chart-canvas {
+  border-radius: 16px;
+  padding: 4px 2px 0;
+}
+
+.report-flow-chart .chart-real-data .chart-svg path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 
 `;
 
