@@ -1124,6 +1124,7 @@ export default function Home() {
   const [user, setUser] = useState<any>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [showAccountDetails, setShowAccountDetails] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [transactions, setTransactions] =
     useState<Transaction[]>(initialTransactions);
@@ -1607,14 +1608,6 @@ export default function Home() {
   const selectedCardPurchases = purchases.filter(
     (purchase) => purchase.cardId === selectedCard
   );
-
-  const filteredTransactions = viewTransactions
-    .filter((transaction) =>
-      `${transaction.description} ${transaction.category} ${transaction.account}`
-        .toLowerCase()
-        .includes(search.toLowerCase())
-    )
-    .sort((a, b) => b.date.localeCompare(a.date));
 
   function navigate(nextPage: Page) {
     if (nextPage === page) {
@@ -2369,10 +2362,58 @@ export default function Home() {
               <Icon name={dark ? "sun" : "moon"} size={18} />
             </button>
 
-            <button className="notification">
-              <Icon name="bell" size={18} />
-              <i />
-            </button>
+            <div className="notification-wrap">
+              <button
+                type="button"
+                className="notification"
+                onClick={() => setShowNotifications((current) => !current)}
+                aria-label="Abrir notificações"
+                aria-expanded={showNotifications}
+                title="Notificações"
+              >
+                <Icon name="bell" size={18} />
+                <i />
+              </button>
+
+              {showNotifications && (
+                <div className="notification-popover">
+                  <div className="notification-popover-head">
+                    <strong>Notificações</strong>
+                    <button
+                      type="button"
+                      onClick={() => setShowNotifications(false)}
+                      aria-label="Fechar notificações"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="notification-item">
+                    <span className="notification-dot warning" />
+                    <div>
+                      <strong>
+                        {viewBills.filter((bill) => !bill.paid).length
+                          ? `${viewBills.filter((bill) => !bill.paid).length} conta(s) pendente(s)`
+                          : "Nenhuma conta pendente"}
+                      </strong>
+                      <small>
+                        {pendingBills > 0
+                          ? `${money(pendingBills)} aguardando pagamento.`
+                          : "Tudo em dia neste período."}
+                      </small>
+                    </div>
+                  </div>
+                  <div className="notification-item">
+                    <span className="notification-dot success" />
+                    <div>
+                      <strong>Resumo atualizado</strong>
+                      <small>
+                        {transactions.length} lançamento(s) cadastrado(s).
+                      </small>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
 
             <button
               type="button"
@@ -2449,7 +2490,7 @@ export default function Home() {
           {page === "transactions" && (
             <TransactionsPage
               dark={dark}
-              transactions={filteredTransactions}
+              transactions={transactions.filter((item) => !isMonthMarker(item))}
               search={search}
               setSearch={setSearch}
               onNew={() => setModal("transaction")}
@@ -3503,6 +3544,7 @@ function Dashboard({
             title="Fluxo financeiro"
             subtitle="Entradas x gastos"
             action="Este mês"
+            onAction={() => onMonthChange(currentMonth)}
           />
 
           <div className="legend">
@@ -3970,6 +4012,32 @@ function TransactionsPage({
   onNew: () => void;
   onDelete: (id: number) => void;
 }) {
+  const [typeFilter, setTypeFilter] = useState<"all" | "income" | "expense">("all");
+  const [periodFilter, setPeriodFilter] = useState<"month" | "all">("month");
+
+  const filtered = useMemo(() => {
+    const currentMonth = currentCalendarMonthKey();
+    const normalizedSearch = search.trim().toLowerCase();
+
+    return transactions
+      .filter((item) => !isMonthMarker(item))
+      .filter((item) => typeFilter === "all" || item.type === typeFilter)
+      .filter((item) => periodFilter === "all" || monthKeyFromDate(item.date) === currentMonth)
+      .filter((item) =>
+        `${item.description} ${item.category} ${item.account}`
+          .toLowerCase()
+          .includes(normalizedSearch)
+      )
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [transactions, search, typeFilter, periodFilter]);
+
+  const typeLabel =
+    typeFilter === "all"
+      ? "Todos"
+      : typeFilter === "income"
+        ? "Entradas"
+        : "Saídas";
+
   return (
     <>
       <div className="page-heading">
@@ -3996,8 +4064,29 @@ function TransactionsPage({
             />
           </div>
 
-          <button className="filter-button">Todos ▾</button>
-          <button className="filter-button">Este mês ▾</button>
+          <button
+            type="button"
+            className={`filter-button ${typeFilter !== "all" ? "active" : ""}`}
+            onClick={() =>
+              setTypeFilter((current) =>
+                current === "all" ? "income" : current === "income" ? "expense" : "all"
+              )
+            }
+            title="Filtrar por tipo"
+          >
+            {typeLabel} ▾
+          </button>
+
+          <button
+            type="button"
+            className={`filter-button ${periodFilter === "all" ? "active" : ""}`}
+            onClick={() =>
+              setPeriodFilter((current) => (current === "month" ? "all" : "month"))
+            }
+            title="Alternar período"
+          >
+            {periodFilter === "month" ? "Este mês" : "Todos os períodos"} ▾
+          </button>
         </div>
 
         <div className="table">
@@ -4010,7 +4099,7 @@ function TransactionsPage({
             <span />
           </div>
 
-          {transactions.map((item) => (
+          {filtered.map((item) => (
             <div className="table-row" key={item.id}>
               <div className="table-description">
                 <div
@@ -4057,9 +4146,9 @@ function TransactionsPage({
             </div>
           ))}
 
-          {!transactions.length && (
+          {!filtered.length && (
             <div className="empty">
-              Nenhum lançamento encontrado.
+              Nenhum lançamento encontrado com esses filtros.
             </div>
           )}
         </div>
@@ -9474,6 +9563,423 @@ button {
 .report-flow-chart .chart-real-data .chart-svg path {
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* =========================================================
+   FINAL POLISH — legibilidade, tema claro e mobile
+   Somente acabamento visual + pequenos controles funcionais.
+========================================================= */
+
+.app {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.app .panel,
+.app .stat-card,
+.app .dashboard-premium-stat,
+.app .card,
+.app .table-panel {
+  min-width: 0;
+}
+
+.app .panel-header,
+.app .page-heading,
+.app .transaction-row,
+.app .bill-row,
+.app .investment-row,
+.app .goal-card,
+.app .table-row {
+  min-width: 0;
+}
+
+.app .panel-header > div:first-child,
+.app .page-heading > div:first-child,
+.app .transaction-info,
+.app .bill-info,
+.app .investment-info {
+  min-width: 0;
+}
+
+.app .panel-header h2,
+.app .panel-header p,
+.app .page-heading h1,
+.app .page-heading p,
+.app .transaction-info strong,
+.app .transaction-info span,
+.app .bill-info strong,
+.app .bill-info span,
+.app .investment-info strong,
+.app .investment-info span {
+  overflow-wrap: anywhere;
+}
+
+.app .panel-header h2 {
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.app .panel-header p {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.app .page-heading h1 {
+  font-size: 24px;
+  line-height: 1.15;
+}
+
+.app .stat-value {
+  font-size: 24px;
+}
+
+.app .table-head {
+  font-size: 9px;
+}
+
+.app .table-row {
+  font-size: 10px;
+}
+
+.app .table-row > span {
+  font-size: 11px;
+}
+
+.app .table-row > strong,
+.app .table-description strong {
+  font-size: 12px;
+}
+
+.app .filter-button {
+  min-height: 38px;
+  font-size: 12px;
+  font-weight: 650;
+  transition: background .18s ease, border-color .18s ease, color .18s ease, transform .18s ease;
+}
+
+.app .filter-button:hover,
+.app .filter-button.active {
+  border-color: rgba(47,229,138,.42);
+  background: rgba(47,229,138,.09);
+  color: var(--green-dark);
+}
+
+.app.dark .filter-button:hover,
+.app.dark .filter-button.active {
+  color: #7affb0;
+  background: rgba(47,229,138,.10);
+}
+
+/* Tema claro: profundidade, contraste e um pouco de vida sem ficar "branco morto". */
+.app:not(.dark) {
+  --bg: #eef3f7;
+  --sidebar: #f9fbfd;
+  --panel: #ffffff;
+  --panel-2: #f3f7fa;
+  --text: #182331;
+  --muted: #596a7d;
+  --border: #d3dee8;
+  --hover: #e8f0f5;
+  --shadow: 0 16px 38px rgba(31, 52, 72, .09);
+  background:
+    radial-gradient(circle at 72% -8%, rgba(47,229,138,.075), transparent 28%),
+    radial-gradient(circle at 18% 12%, rgba(93,149,255,.055), transparent 25%),
+    var(--bg);
+}
+
+.app:not(.dark) .content {
+  background:
+    radial-gradient(circle at 70% 0%, rgba(93,149,255,.025), transparent 34%);
+}
+
+.app:not(.dark) .panel,
+.app:not(.dark) .stat-card,
+.app:not(.dark) .dashboard-premium-stat,
+.app:not(.dark) .card,
+.app:not(.dark) .table-panel {
+  background:
+    linear-gradient(145deg, rgba(255,255,255,.98), rgba(247,250,253,.96)),
+    var(--panel);
+  border-color: #cfdae5 !important;
+  box-shadow:
+    0 14px 34px rgba(31,52,72,.075),
+    inset 0 1px 0 rgba(255,255,255,.95);
+}
+
+.app:not(.dark) .dashboard-grid .panel,
+.app:not(.dark) .bottom-grid .panel,
+.app:not(.dark) .chart-panel {
+  background:
+    radial-gradient(circle at 8% 0%, rgba(47,229,138,.035), transparent 34%),
+    radial-gradient(circle at 92% 0%, rgba(93,149,255,.04), transparent 32%),
+    linear-gradient(145deg, #ffffff, #f7fafc);
+}
+
+.app:not(.dark) .dashboard-premium-stat.green {
+  background:
+    radial-gradient(circle at 92% 100%, rgba(47,229,138,.12), transparent 45%),
+    linear-gradient(145deg, #ffffff, #f3faf7) !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.red {
+  background:
+    radial-gradient(circle at 92% 100%, rgba(255,95,112,.095), transparent 45%),
+    linear-gradient(145deg, #ffffff, #fff6f7) !important;
+}
+
+.app:not(.dark) .dashboard-premium-stat.blue {
+  background:
+    radial-gradient(circle at 92% 100%, rgba(93,149,255,.10), transparent 45%),
+    linear-gradient(145deg, #ffffff, #f4f8ff) !important;
+}
+
+.app:not(.dark) .chart-summary-card {
+  background:
+    linear-gradient(145deg, #ffffff, #f2f7fa) !important;
+  border-color: #d0dbe5 !important;
+  box-shadow:
+    0 7px 18px rgba(31,52,72,.055),
+    inset 0 1px 0 rgba(255,255,255,.98);
+}
+
+.app:not(.dark) .chart-panel .chart-svg {
+  filter:
+    drop-shadow(0 5px 12px rgba(47,170,110,.10))
+    drop-shadow(0 5px 12px rgba(255,95,112,.06));
+}
+
+.app:not(.dark) .chart-panel .legend {
+  color: #334457;
+}
+
+.app:not(.dark) .chart-days {
+  color: #405267;
+  font-weight: 750;
+}
+
+.app:not(.dark) .premium-chart-yaxis span {
+  color: #52657a !important;
+  font-weight: 700;
+}
+
+/* Notificação deixou de ser apenas decoração. */
+.notification-wrap {
+  position: relative;
+}
+
+.notification-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 120;
+  width: min(340px, calc(100vw - 32px));
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 20px 50px rgba(0,0,0,.18);
+  backdrop-filter: blur(16px);
+}
+
+.notification-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 2px 9px;
+  border-bottom: 1px solid var(--border);
+}
+
+.notification-popover-head strong {
+  font-size: 13px;
+}
+
+.notification-popover-head button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  padding: 2px 5px;
+}
+
+.notification-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 2px 3px;
+}
+
+.notification-item > div {
+  min-width: 0;
+}
+
+.notification-item strong,
+.notification-item small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.notification-item strong {
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+
+.notification-item small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.notification-dot {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  margin-top: 4px;
+  border-radius: 50%;
+}
+
+.notification-dot.warning {
+  background: #f0aa35;
+  box-shadow: 0 0 10px rgba(240,170,53,.35);
+}
+
+.notification-dot.success {
+  background: var(--green);
+  box-shadow: 0 0 10px rgba(47,229,138,.35);
+}
+
+/* Evita qualquer texto espremido no desktop. */
+.table-row > span,
+.table-row > strong,
+.table-description strong {
+  min-width: 0;
+}
+
+@media (max-width: 850px) {
+  .app .page-heading h1 {
+    font-size: 22px;
+  }
+
+  .app .panel-header h2 {
+    font-size: 15px;
+  }
+
+  .app .panel-header p {
+    font-size: 10px;
+  }
+
+  .app .stat-value {
+    font-size: 22px;
+  }
+
+  .app .page {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .app .dashboard-grid,
+  .app .bottom-grid {
+    gap: 12px;
+  }
+
+  .app .panel,
+  .app .stat-card,
+  .app .dashboard-premium-stat {
+    border-radius: 15px;
+  }
+
+  .app .filter-button {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 40px;
+    font-size: 11px;
+    padding: 8px 10px;
+  }
+
+  .notification-popover {
+    position: fixed;
+    top: 62px;
+    right: 14px;
+    width: min(340px, calc(100vw - 28px));
+  }
+}
+
+@media (max-width: 580px) {
+  .app .page-heading h1 {
+    font-size: 21px;
+  }
+
+  .app .page-heading p:not(.eyebrow) {
+    font-size: 11px;
+  }
+
+  .app .panel-header h2 {
+    font-size: 15px;
+  }
+
+  .app .panel-header p {
+    font-size: 10px;
+  }
+
+  .app .table-row {
+    font-size: 10px;
+  }
+
+  .app .table-row > span {
+    font-size: 10px;
+  }
+
+  .app .table-row > strong,
+  .app .table-description strong {
+    font-size: 11px;
+  }
+
+  .app .filter-button {
+    min-height: 38px;
+  }
+
+  .app .chart-summary-card span {
+    font-size: 8px;
+    letter-spacing: .35px;
+  }
+
+  .app .chart-summary-card strong {
+    font-size: 11px;
+  }
+
+  .app .chart-days {
+    font-size: 9px;
+  }
+
+  .app .premium-chart-yaxis span {
+    font-size: 9px !important;
+  }
+}
+
+@media (max-width: 390px) {
+  .app .chart-summary {
+    gap: 5px;
+  }
+
+  .app .chart-summary-card {
+    padding: 8px 7px;
+  }
+
+  .app .chart-summary-card span {
+    font-size: 7px;
+  }
+
+  .app .chart-summary-card strong {
+    font-size: 10px;
+  }
+
+  .app .filter-button {
+    font-size: 10px;
+    padding-left: 7px;
+    padding-right: 7px;
+  }
 }
 
 
