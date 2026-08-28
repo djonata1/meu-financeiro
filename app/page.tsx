@@ -128,7 +128,7 @@ function seedData() {
       { id: uid(), name: "Comprar carro", targetCents: 3000000, currentCents: 1200000, deadline: addMonthsISO(today, 10), category: "Compras", description: "" },
       { id: uid(), name: "Reserva de emergência", targetCents: 1500000, currentCents: 900000, deadline: addMonthsISO(today, 6), category: "Finanças", description: "" },
     ],
-    settings: { theme: "dark" },
+    settings: { theme: "dark", activeMonth: today.slice(0, 7), closedMonths: [] },
   };
 }
 
@@ -138,22 +138,134 @@ function seedData() {
 
 async function loadState() {
   try {
-    const res = await Promise.resolve({ value: window.localStorage.getItem(STORAGE_KEY) });
-    if (res && res.value) return JSON.parse(res.value);
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      if (typeof window !== "undefined") window.location.href = "/login";
+      return null;
+    }
+
+    // Compatível com os dois formatos de tabela que já foram usados
+    // no projeto: uma coluna "data" (JSON) ou colunas separadas.
+    const { data: jsonRow, error: jsonError } = await supabase
+      .from("finance_user_data")
+      .select("data")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (!jsonError) {
+      if (jsonRow?.data && typeof jsonRow.data === "object") {
+        return jsonRow.data;
+      }
+
+      const initial = seedData();
+      const { error: insertError } = await supabase
+        .from("finance_user_data")
+        .insert({
+          user_id: user.id,
+          data: initial,
+          updated_at: new Date().toISOString(),
+        });
+
+      if (!insertError || insertError.code === "23505") {
+        return initial;
+      }
+
+      console.error("Erro ao criar dados JSON:", insertError);
+    }
+
+    // Fallback para a estrutura antiga/atual com colunas separadas.
+    const { data: row, error: columnsError } = await supabase
+      .from("finance_user_data")
+      .select("theme, transactions, bills, cards, purchases, goals")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (columnsError) throw columnsError;
+
+    if (row) {
+      return {
+        ...seedData(),
+        settings: {
+          theme: row.theme === "light" ? "light" : "dark",
+        },
+        transactions: row.transactions || [],
+        bills: row.bills || [],
+        cards: row.cards || [],
+        cardPurchases: row.purchases || [],
+        goals: row.goals || [],
+      };
+    }
+
+    const initial = seedData();
+    const { error: insertColumnsError } = await supabase
+      .from("finance_user_data")
+      .insert({
+        user_id: user.id,
+        theme: initial.settings?.theme || "dark",
+        transactions: initial.transactions || [],
+        bills: initial.bills || [],
+        cards: initial.cards || [],
+        purchases: initial.cardPurchases || [],
+        goals: initial.goals || [],
+      });
+
+    if (insertColumnsError && insertColumnsError.code !== "23505") {
+      throw insertColumnsError;
+    }
+
+    return initial;
   } catch (e) {
-    // key not found or storage unavailable — fall through to seed data
+    console.error("Erro ao carregar dados financeiros:", e);
+    return null;
   }
-  return seedData();
 }
 
 async function saveState(state) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+
+    if (userError || !user || !state) return false;
+
+    // Primeiro tenta o formato JSON completo.
+    const { error: jsonError } = await supabase
+      .from("finance_user_data")
+      .upsert(
+        {
+          user_id: user.id,
+          data: state,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
+
+    if (!jsonError) return true;
+
+    // Se a tabela não tiver a coluna "data", usa o formato de colunas separadas.
+    const { error: columnsError } = await supabase
+      .from("finance_user_data")
+      .upsert(
+        {
+          user_id: user.id,
+          theme: state.settings?.theme === "light" ? "light" : "dark",
+          transactions: state.transactions || [],
+          bills: state.bills || [],
+          cards: state.cards || [],
+          purchases: state.cardPurchases || [],
+          goals: state.goals || [],
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
+
+    if (columnsError) throw columnsError;
     return true;
   } catch (e) {
+    console.error("Erro ao salvar dados financeiros:", e);
     return false;
   }
 }
+
 
 /* =========================================================================
    Parser seguro de expressões (calculadora comum) — sem eval/Function
@@ -272,9 +384,9 @@ const ThemeVars = () => (
     .mf-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
     .mf-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
     .mf-focus:focus-visible { outline: 2px solid var(--brand-2); outline-offset: 2px; }
-    .mf-sidebar-desktop { position: sticky; top: 0; height: 100vh; box-sizing: border-box; overflow-y: auto; }
+    .mf-sidebar-desktop { position: sticky; top: 0; height: 100vh; box-sizing: border-box; overflow-y: auto; align-self: flex-start; }
     .mf-main-scroll { height: 100vh; box-sizing: border-box; }
-    .mf-calc-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 14px; width: 100%; box-sizing: border-box; }
+    .mf-calc-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 14px; width: 100%; box-sizing: border-box; align-items: stretch; }
     .mf-calc-grid button { min-width: 0; width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; }
     .mf-bill-paid { background: color-mix(in srgb, var(--income) 13%, var(--surface)); border-left: 4px solid var(--income) !important; }
     .mf-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
@@ -511,11 +623,38 @@ export default function MeuFinanceiro() {
   };
 
   useEffect(() => {
+    let active = true;
+
     (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if (!user) {
+        window.location.href = "/login";
+        return;
+      }
+
       const d = await loadState();
-      setData(d);
+      if (!active) return;
+
+      if (!d) {
+        window.location.href = "/login";
+        return;
+      }
+
+      setData({
+        ...d,
+        settings: {
+          theme: d.settings?.theme === "light" ? "light" : "dark",
+          activeMonth: d.settings?.activeMonth || isoToday().slice(0, 7),
+          closedMonths: Array.isArray(d.settings?.closedMonths) ? d.settings.closedMonths : []
+        }
+      });
       setLoaded(true);
     })();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -564,7 +703,7 @@ export default function MeuFinanceiro() {
             <aside className={`mf-root ${theme} mf-scroll`} style={{ position: "relative", width: 250, background: "var(--surface)", padding: "20px 14px", display: "flex", flexDirection: "column", gap: 4, height: "100%", overflowY: "auto", animation: "mf-fade-in .18s ease" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <Brand />
-                <button className="mf-focus" onClick={() => setDrawerOpen(false)} style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, width: 30, height: 30, color: "var(--text)" }}><X size={15} /></button>
+                <button aria-label="Fechar menu" className="mf-focus" onClick={() => setDrawerOpen(false)} style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 9, width: 34, height: 34, minWidth: 34, padding: 0, color: "var(--text)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, lineHeight: 0 }}><X size={18} strokeWidth={2.2} /></button>
               </div>
               <nav style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 2 }}>
                 {NAV.map((n) => <NavItem key={n.key} item={n} active={tab === n.key} onClick={() => { setTab(n.key); setDrawerOpen(false); }} />)}
@@ -687,14 +826,31 @@ function useFinance(data) {
 }
 
 /* =========================================================================
-   DASHBOARD
+   DASHBOARD / FECHAMENTO DE MÊS
    ========================================================================= */
+
+function getActiveMonth(data) {
+  const actual = isoToday().slice(0, 7);
+  const stored = data?.settings?.activeMonth;
+  if (!stored || !/^\d{4}-\d{2}$/.test(stored)) return actual;
+  // Se o calendário avançou, o mês atual volta a ser o mês ativo.
+  return stored < actual ? actual : stored;
+}
+
+function monthEndISO(monthKey) {
+  const [y, m] = monthKey.split("-").map(Number);
+  const d = new Date(y, m, 0);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
 
 function Dashboard({ data, setData, goTab }) {
   const fin = useFinance(data);
   const today = isoToday();
-  const monthStart = today.slice(0, 8) + "01";
-  const { income, expense, savings } = fin.periodTotals(monthStart, today);
+  const activeMonth = getActiveMonth(data);
+  const monthStart = activeMonth + "-01";
+  const monthEnd = monthEndISO(activeMonth);
+  const periodEnd = activeMonth === today.slice(0, 7) ? today : monthEnd;
+  const { income, expense, savings } = fin.periodTotals(monthStart, periodEnd);
 
   const recent = [...data.transactions].sort((a, b) => (b.date > a.date ? 1 : -1)).slice(0, 6);
   const upcoming = data.bills.filter((b) => b.status === "pending").sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1)).slice(0, 5);
@@ -703,7 +859,7 @@ function Dashboard({ data, setData, goTab }) {
     const map = {};
     for (const t of data.transactions) {
       if (t.type !== "expense" || t.status !== "paid" || t.transfer) continue;
-      if (!inCurrentMonth(t.date)) continue;
+      if (monthKeyOf(t.date) !== activeMonth) continue;
       map[t.categoryId] = (map[t.categoryId] || 0) + t.valueCents;
     }
     return Object.entries(map).map(([id, v]) => ({ id, name: fin.categoryName(id), value: v / 100, color: fin.categoryOf(id)?.color || "#888" }))
@@ -712,8 +868,29 @@ function Dashboard({ data, setData, goTab }) {
 
   const evolution = useMemo(() => buildEvolution(data.transactions), [data.transactions]);
 
+  const closeMonth = () => {
+    const nextMonth = addMonthsISO(activeMonth + "-01", 1).slice(0, 7);
+    const ok = window.confirm(`Fechar ${monthLabel(activeMonth)}?\n\nNada será apagado. O mês ficará no histórico e o painel passará para ${monthLabel(nextMonth)}. Parcelas futuras continuam normalmente.`);
+    if (!ok) return;
+    setData((d) => ({
+      ...d,
+      settings: {
+        ...(d.settings || {}),
+        activeMonth: nextMonth,
+        closedMonths: Array.from(new Set([...(d.settings?.closedMonths || []), activeMonth]))
+      }
+    }));
+  };
+
   return (
     <div className="mf-anim-in">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <div>
+          <div className="mf-display" style={{ fontSize: 15.5, fontWeight: 600 }}>Mês ativo: {monthLabel(activeMonth)}</div>
+          <div style={{ fontSize: 12, color: "var(--text-faint)" }}>Fechar o mês arquiva o período sem apagar seus dados.</div>
+        </div>
+        <button className="mf-btn mf-btn-ghost mf-focus" onClick={closeMonth}>Fechar mês</button>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 20 }}>
         <StatCard label="Saldo" valueCents={fin.totalBalance} icon={Wallet} tone="neutral" />
         <StatCard label="Entradas (mês)" valueCents={income} icon={ArrowUpCircle} tone="income" />
@@ -737,7 +914,7 @@ function Dashboard({ data, setData, goTab }) {
           </div>
         </div>
         <div className="mf-card" style={{ padding: 18 }}>
-          <SectionTitle title="Gastos por categoria" subtitle="Mês atual" />
+          <SectionTitle title="Gastos por categoria" subtitle={`Mês ativo · ${monthLabel(activeMonth)}`} />
           {catSpend.length === 0 ? (
             <EmptyState icon={Tags} title="Sem gastos ainda" description="Registre transações para ver a distribuição." />
           ) : (
@@ -1279,7 +1456,7 @@ function Bills({ data, setData }) {
                   <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>vence {fmtDateBR(b.dueDate)} · {cat?.name} · {acc?.name}</div>
                 </div>
                 <Money cents={b.valueCents} weight={700} />
-                {b.status === "pending" && <button className="mf-btn mf-btn-primary mf-focus" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => openPay(b)}>Marcar como paga</button>}
+                {b.status === "pending" ? <button className="mf-btn mf-btn-primary mf-focus" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => openPay(b)}>Marcar como paga</button> : <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, background: "color-mix(in srgb, var(--income) 16%, var(--surface))", border: "1px solid color-mix(in srgb, var(--income) 45%, var(--border))", color: "var(--income)", fontSize: 12.5, fontWeight: 700 }}><Check size={14} /> Paga</span>}
                 <div style={{ display: "flex", gap: 4 }}>
                   <IconBtn onClick={() => openEdit(b)}><Pencil size={13} /></IconBtn>
                   <IconBtn onClick={() => setConfirmId(b.id)} danger><Trash2 size={13} /></IconBtn>
@@ -2110,7 +2287,7 @@ function CommonCalc() {
     try { const r = safeEvaluate(expr); setResult(r); setError(""); }
     catch (e) { setError(e.message); setResult(null); }
   };
-  const btns = [")", "7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "0", ".", "+"];
+  const btns = ["7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "0", ".", "+"];
   return (
     <div className="mf-card" style={{ padding: 18 }}>
       <div className="mf-mono" style={{ background: "var(--surface-2)", borderRadius: 10, padding: "16px 14px", fontSize: 22, minHeight: 60, wordBreak: "break-all", border: "1px solid var(--border)" }}>
@@ -2119,9 +2296,10 @@ function CommonCalc() {
       {result !== null && <div className="mf-mono" style={{ fontSize: 26, fontWeight: 700, color: "var(--brand-2)", textAlign: "right", marginTop: 8 }}>= {result.toLocaleString("pt-BR", { maximumFractionDigits: 8 })}</div>}
       {error && <ErrorText>{error}</ErrorText>}
       <div className="mf-calc-grid">
-        <CalcBtn onClick={clear} wide>C</CalcBtn>
+        <CalcBtn onClick={clear}>C</CalcBtn>
         <CalcBtn onClick={back}><Delete size={16} /></CalcBtn>
         <CalcBtn onClick={() => press("(")}>(</CalcBtn>
+        <CalcBtn onClick={() => press(")")}>)</CalcBtn>
         {btns.map((b) => <CalcBtn key={b} onClick={() => press(b)} op={"+-*/".includes(b)}>{b === "*" ? "×" : b === "/" ? <Divide size={15} /> : b}</CalcBtn>)}
         <CalcBtn onClick={equals} primary wide2>=</CalcBtn>
       </div>
@@ -2131,7 +2309,7 @@ function CommonCalc() {
 function CalcBtn({ children, onClick, wide, wide2, op, primary }) {
   return (
     <button className="mf-focus" onClick={onClick} style={{
-      gridColumn: wide ? "span 2" : wide2 ? "span 2" : "span 1",
+      gridColumn: wide ? "span 1" : wide2 ? "span 4" : "span 1",
       padding: "16px 0", borderRadius: 10, border: "1px solid var(--border)", cursor: "pointer", fontSize: 17, fontWeight: 600,
       width: "100%", minWidth: 0, boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "center",
       background: primary ? "var(--brand)" : op ? "var(--surface-2)" : "var(--surface)", color: primary ? "white" : op ? "var(--brand-2)" : "var(--text)"
