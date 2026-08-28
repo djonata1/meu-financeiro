@@ -102,32 +102,19 @@ const DEFAULT_CARDS = [
 
 function seedData() {
   const today = isoToday();
-  const t1 = { id: uid(), description: "Salário", valueCents: 500000, type: "income", categoryId: "cat-salario", accountId: "acc-nubank", date: addMonthsISO(today, 0).slice(0, 8) + "05", status: "paid", note: "", transfer: false };
-  const t2 = { id: uid(), description: "Mercado", valueCents: 65000, type: "expense", categoryId: "cat-alimentacao", accountId: "acc-nubank", date: today, status: "paid", note: "", transfer: false };
-  const t3 = { id: uid(), description: "Internet", valueCents: 12000, type: "expense", categoryId: "cat-casa", accountId: "acc-inter", date: today, status: "paid", note: "", transfer: false };
+
+  // Conta nova começa realmente zerada. As categorias são apenas categorias
+  // padrão e não representam dinheiro/dados de outro usuário.
   return {
-    categories: DEFAULT_CATEGORIES,
-    accounts: DEFAULT_ACCOUNTS,
-    cards: DEFAULT_CARDS,
-    transactions: [t1, t2, t3],
-    bills: [
-      { id: uid(), name: "Aluguel", valueCents: 110000, dueDate: addMonthsISO(today, 0).slice(0, 8) + "28", categoryId: "cat-casa", accountId: "acc-nubank", status: "pending", recurrence: "monthly", paidTransactionId: null },
-      { id: uid(), name: "Academia", valueCents: 9000, dueDate: addMonthsISO(today, 0).slice(0, 8) + "15", categoryId: "cat-saude", accountId: "acc-inter", status: "pending", recurrence: "monthly", paidTransactionId: null },
-    ],
-    cardPurchases: [
-      { id: uid(), description: "Notebook", valueCents: 360000, cardId: "card-nubank", categoryId: "cat-compras", date: today, installments: 12, installmentValueCents: 30000, note: "" },
-      { id: uid(), description: "Restaurante", valueCents: 8500, cardId: "card-inter", categoryId: "cat-alimentacao", date: today, installments: 1, installmentValueCents: 8500, note: "" },
-    ],
+    categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
+    accounts: [],
+    cards: [],
+    transactions: [],
+    bills: [],
+    cardPurchases: [],
     invoicePayments: {},
-    investments: [
-      { id: uid(), name: "Tesouro Selic 2029", category: "Renda fixa", institution: "Tesouro Direto", investedCents: 500000, currentCents: 538000, date: addMonthsISO(today, -6), note: "" },
-      { id: uid(), name: "Bitcoin", category: "Cripto", institution: "Corretora", investedCents: 200000, currentCents: 176000, date: addMonthsISO(today, -3), note: "" },
-      { id: uid(), name: "PETR4", category: "Ações", institution: "Corretora", investedCents: 300000, currentCents: 342000, date: addMonthsISO(today, -8), note: "" },
-    ],
-    goals: [
-      { id: uid(), name: "Comprar carro", targetCents: 3000000, currentCents: 1200000, deadline: addMonthsISO(today, 10), category: "Compras", description: "" },
-      { id: uid(), name: "Reserva de emergência", targetCents: 1500000, currentCents: 900000, deadline: addMonthsISO(today, 6), category: "Finanças", description: "" },
-    ],
+    investments: [],
+    goals: [],
     settings: { theme: "dark", activeMonth: today.slice(0, 7), closedMonths: [] },
   };
 }
@@ -145,80 +132,58 @@ async function loadState() {
       return null;
     }
 
-    // Compatível com os dois formatos de tabela que já foram usados
-    // no projeto: uma coluna "data" (JSON) ou colunas separadas.
-    const { data: jsonRow, error: jsonError } = await supabase
+    // O estado financeiro é SEMPRE buscado pela chave do usuário autenticado.
+    // Isso impede que um usuário veja os dados de outro.
+    const { data: row, error } = await supabase
       .from("finance_user_data")
       .select("data")
       .eq("user_id", user.id)
       .maybeSingle();
 
-    if (!jsonError) {
-      if (jsonRow?.data && typeof jsonRow.data === "object") {
-        return jsonRow.data;
-      }
+    if (error) throw error;
 
-      const initial = seedData();
-      const { error: insertError } = await supabase
-        .from("finance_user_data")
-        .insert({
-          user_id: user.id,
-          data: initial,
-          updated_at: new Date().toISOString(),
-        });
-
-      if (!insertError || insertError.code === "23505") {
-        return initial;
-      }
-
-      console.error("Erro ao criar dados JSON:", insertError);
+    if (row?.data && typeof row.data === "object") {
+      return normalizeState(row.data);
     }
 
-    // Fallback para a estrutura antiga/atual com colunas separadas.
-    const { data: row, error: columnsError } = await supabase
-      .from("finance_user_data")
-      .select("theme, transactions, bills, cards, purchases, goals")
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if (columnsError) throw columnsError;
-
-    if (row) {
-      return {
-        ...seedData(),
-        settings: {
-          theme: row.theme === "light" ? "light" : "dark",
-        },
-        transactions: row.transactions || [],
-        bills: row.bills || [],
-        cards: row.cards || [],
-        cardPurchases: row.purchases || [],
-        goals: row.goals || [],
-      };
-    }
-
+    // Primeiro acesso: cria um espaço totalmente vazio e exclusivo deste usuário.
     const initial = seedData();
-    const { error: insertColumnsError } = await supabase
+    const { error: insertError } = await supabase
       .from("finance_user_data")
       .insert({
         user_id: user.id,
-        theme: initial.settings?.theme || "dark",
-        transactions: initial.transactions || [],
-        bills: initial.bills || [],
-        cards: initial.cards || [],
-        purchases: initial.cardPurchases || [],
-        goals: initial.goals || [],
+        data: initial,
+        updated_at: new Date().toISOString(),
       });
 
-    if (insertColumnsError && insertColumnsError.code !== "23505") {
-      throw insertColumnsError;
-    }
-
+    if (insertError && insertError.code !== "23505") throw insertError;
     return initial;
   } catch (e) {
     console.error("Erro ao carregar dados financeiros:", e);
     return null;
   }
+}
+
+function normalizeState(raw) {
+  const empty = seedData();
+  const settings = raw?.settings || {};
+
+  return {
+    categories: Array.isArray(raw?.categories) ? raw.categories : empty.categories,
+    accounts: Array.isArray(raw?.accounts) ? raw.accounts : [],
+    cards: Array.isArray(raw?.cards) ? raw.cards : [],
+    transactions: Array.isArray(raw?.transactions) ? raw.transactions : [],
+    bills: Array.isArray(raw?.bills) ? raw.bills : [],
+    cardPurchases: Array.isArray(raw?.cardPurchases) ? raw.cardPurchases : [],
+    invoicePayments: raw?.invoicePayments && typeof raw.invoicePayments === "object" ? raw.invoicePayments : {},
+    investments: Array.isArray(raw?.investments) ? raw.investments : [],
+    goals: Array.isArray(raw?.goals) ? raw.goals : [],
+    settings: {
+      theme: settings.theme === "light" ? "light" : "dark",
+      activeMonth: /^\d{4}-\d{2}$/.test(settings.activeMonth || "") ? settings.activeMonth : empty.settings.activeMonth,
+      closedMonths: Array.isArray(settings.closedMonths) ? settings.closedMonths : [],
+    },
+  };
 }
 
 async function saveState(state) {
@@ -227,38 +192,20 @@ async function saveState(state) {
 
     if (userError || !user || !state) return false;
 
-    // Primeiro tenta o formato JSON completo.
-    const { error: jsonError } = await supabase
+    // Salva somente na linha pertencente ao usuário autenticado.
+    const safeState = normalizeState(state);
+    const { error } = await supabase
       .from("finance_user_data")
       .upsert(
         {
           user_id: user.id,
-          data: state,
+          data: safeState,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "user_id" }
       );
 
-    if (!jsonError) return true;
-
-    // Se a tabela não tiver a coluna "data", usa o formato de colunas separadas.
-    const { error: columnsError } = await supabase
-      .from("finance_user_data")
-      .upsert(
-        {
-          user_id: user.id,
-          theme: state.settings?.theme === "light" ? "light" : "dark",
-          transactions: state.transactions || [],
-          bills: state.bills || [],
-          cards: state.cards || [],
-          purchases: state.cardPurchases || [],
-          goals: state.goals || [],
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id" }
-      );
-
-    if (columnsError) throw columnsError;
+    if (error) throw error;
     return true;
   } catch (e) {
     console.error("Erro ao salvar dados financeiros:", e);
@@ -490,7 +437,7 @@ function Modal({ open, onClose, title, children, width = 520, footer }) {
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <h3 className="mf-display" style={{ fontSize: 19, margin: 0 }}>{title}</h3>
-          <button aria-label="Fechar" className="mf-focus" onClick={onClose} style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--text)" }}>
+          <button aria-label="Fechar" className="mf-focus" onClick={onClose} style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 9, width: 36, height: 36, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, cursor: "pointer", color: "var(--text)" }}>
             <X size={16} />
           </button>
         </div>
@@ -2580,7 +2527,7 @@ function SettingsSection({ data, setData }) {
         <ResultLine label="Metas" value={data.goals.length} />
       </div>
 
-      <ConfirmDialog open={confirmReset} title="Reiniciar todos os dados" message="Isso vai apagar todos os seus dados atuais e restaurar os dados de exemplo. Essa ação não pode ser desfeita." onCancel={() => setConfirmReset(false)} onConfirm={resetData} />
+      <ConfirmDialog open={confirmReset} title="Reiniciar todos os dados" message="Isso vai apagar seus dados desta conta e deixar contas, cartões, transações, contas a pagar, investimentos e metas zerados. As categorias padrão serão mantidas. Essa ação não pode ser desfeita." onCancel={() => setConfirmReset(false)} onConfirm={resetData} />
     </div>
   );
 }
