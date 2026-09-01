@@ -20,6 +20,187 @@ import {
    ========================================================================= */
 
 const STORAGE_KEY = "meu-financeiro:v1";
+const LOCAL_CACHE_KEY = "meu-financeiro:cache:v2";
+
+const occurrenceKey = (fixedAccountId, monthKey) => `${fixedAccountId}:${monthKey}`;
+
+const safeString = (v) => typeof v === "string" ? v : v == null ? "" : String(v);
+const safeCents = (v) => Number.isFinite(Number(v)) ? Math.max(0, Math.round(Number(v))) : 0;
+
+function daysInMonth(year, month) {
+  return new Date(year, month, 0).getDate();
+}
+
+function dueDateForMonth(monthKey, dueDay) {
+  const [y, m] = monthKey.split("-").map(Number);
+  const day = Math.min(Math.max(1, Number(dueDay) || 1), daysInMonth(y, m));
+  return `${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function fixedTemplateFromBill(b) {
+  const dueDay = Number(safeString(b?.dueDate).slice(8, 10)) || 1;
+  return {
+    id: b.fixedAccountId || `fixed-${b.id}`,
+    name: safeString(b.name) || "Conta fixa",
+    valueCents: safeCents(b.valueCents),
+    dueDay,
+    categoryId: b.categoryId || "cat-recorrente",
+    accountId: b.accountId || "",
+    recurrence: b.recurrence === "yearly" ? "yearly" : "monthly",
+    startDate: b.startDate || b.dueDate || isoToday(),
+    active: true,
+  };
+}
+
+function normalizeState(raw) {
+  const base = seedData();
+  const d = raw && typeof raw === "object" ? raw : {};
+  const transactions = Array.isArray(d.transactions) ? d.transactions : [];
+  const oldBills = Array.isArray(d.bills) ? d.bills : [];
+
+  const fixedAccounts = Array.isArray(d.fixedAccounts)
+    ? d.fixedAccounts.map((f) => ({
+        id: f.id || uid(),
+        name: safeString(f.name) || "Conta fixa",
+        valueCents: safeCents(f.valueCents),
+        dueDay: Number(f.dueDay) || Number(safeString(f.dueDate).slice(8, 10)) || 1,
+        categoryId: f.categoryId || "cat-recorrente",
+        accountId: f.accountId || "",
+        recurrence: f.recurrence === "yearly" ? "yearly" : "monthly",
+        startDate: f.startDate || f.dueDate || isoToday(),
+        active: f.active !== false,
+      }))
+    : [];
+
+  const fixedIds = new Set(fixedAccounts.map((f) => f.id));
+
+  // Migração compatível: contas fixas antigas continuam funcionando,
+  // mas passam a ter uma única ocorrência identificada por mês.
+  const bills = oldBills.map((b) => {
+    const fixed = !!(b.fixed || b.recurrence === "monthly" || b.recurrence === "yearly" || b.fixedAccountId);
+    const fixedAccountId = fixed ? (b.fixedAccountId || `fixed-${b.id}`) : null;
+    const mk = monthKeyOf(b.dueDate || isoToday());
+    return {
+      ...b,
+      id: b.id || uid(),
+      name: safeString(b.name) || "Conta",
+      valueCents: safeCents(b.valueCents),
+      dueDate: b.dueDate || isoToday(),
+      categoryId: b.categoryId || "cat-recorrente",
+      accountId: b.accountId || "",
+      status: b.status === "paid" ? "paid" : "pending",
+      fixed,
+      recurrence: fixed ? (b.recurrence === "yearly" ? "yearly" : "monthly") : "none",
+      fixedAccountId,
+      occurrenceKey: fixedAccountId ? (b.occurrenceKey || occurrenceKey(fixedAccountId, mk)) : null,
+      paidDate: b.paidDate || null,
+      paymentId: b.paymentId || b.paidTransactionId || null,
+      paymentAccountId: b.paymentAccountId || b.accountId || "",
+      paidTransactionId: null,
+    };
+  });
+
+  for (const b of bills) {
+    if (b.fixed && b.fixedAccountId && !fixedIds.has(b.fixedAccountId)) {
+      fixedAccounts.push(fixedTemplateFromBill(b));
+      fixedIds.add(b.fixedAccountId);
+    }
+  }
+
+  // Regra estrutural: uma conta fixa só pode ter uma ocorrência por mês.
+  // Se existirem duplicatas antigas, preservamos a paga; caso contrário,
+  // preservamos a primeira ocorrência encontrada.
+  const occurrenceMap = new Map();
+  for (const b of bills) {
+    if (!b.fixed || !b.occurrenceKey) continue;
+    const previous = occurrenceMap.get(b.occurrenceKey);
+    if (!previous || (b.status === "paid" && previous.status !== "paid")) {
+      occurrenceMap.set(b.occurrenceKey, b);
+    }
+  }
+  const cleanedBills = bills.filter((b) => {
+    if (!b.fixed || !b.occurrenceKey) return true;
+    return occurrenceMap.get(b.occurrenceKey)?.id === b.id;
+  });
+
+  // Transações geradas automaticamente por contas antigas não são mais
+  // usadas: o pagamento da conta é representado pelo status da ocorrência.
+  const linkedPaymentIds = new Set(oldBills.map((b) => b.paidTransactionId).filter(Boolean));
+  const invoicePayments = d.invoicePayments && typeof d.invoicePayments === "object" ? d.invoicePayments : {};
+  const invoiceTxIds = new Set(Object.values(invoicePayments).map((p) => p?.transactionId).filter(Boolean));
+
+  // Faturas são o único fluxo que cria uma transação de pagamento.
+  // Cada invoicePaymentKey pode ter exatamente uma transação.
+  const seenInvoiceKeys = new Set();
+  const cleanedTransactions = transactions.filter((t) => {
+    if (linkedPaymentIds.has(t.id) || t.sourceBillId || t.sourceBillOccurrenceId) return false;
+    if (t.invoicePaymentKey) {
+      const expectedId = invoicePayments[t.invoicePaymentKey]?.transactionId;
+      if (!expectedId || expectedId !== t.id || seenInvoiceKeys.has(t.invoicePaymentKey)) return false;
+      seenInvoiceKeys.add(t.invoicePaymentKey);
+    }
+    return true;
+  });
+
+  return {
+    ...base,
+    ...d,
+    categories: Array.isArray(d.categories) && d.categories.length ? d.categories : base.categories,
+    accounts: Array.isArray(d.accounts) ? d.accounts : [],
+    cards: Array.isArray(d.cards) ? d.cards : [],
+    transactions: cleanedTransactions,
+    bills: cleanedBills,
+    fixedAccounts,
+    cardPurchases: Array.isArray(d.cardPurchases) ? d.cardPurchases : [],
+    invoicePayments,
+    investments: Array.isArray(d.investments) ? d.investments : [],
+    goals: Array.isArray(d.goals) ? d.goals : [],
+    settings: {
+      theme: d.settings?.theme === "light" ? "light" : "dark",
+      activeMonth: d.settings?.activeMonth || isoToday().slice(0, 7),
+      closedMonths: Array.isArray(d.settings?.closedMonths) ? d.settings.closedMonths : [],
+    },
+  };
+}
+
+function ensureFixedOccurrences(state, monthKey = isoToday().slice(0, 7)) {
+  const next = normalizeState(state);
+  const bills = [...next.bills];
+  const existing = new Set(
+    bills.filter((b) => b.fixed && b.occurrenceKey).map((b) => b.occurrenceKey)
+  );
+
+  for (const f of next.fixedAccounts || []) {
+    if (f.active === false) continue;
+    const startMonth = monthKeyOf(f.startDate || isoToday());
+    if (monthKey < startMonth) continue;
+    if (f.recurrence === "yearly" && monthKey.slice(5) !== startMonth.slice(5)) continue;
+
+    const key = occurrenceKey(f.id, monthKey);
+    if (existing.has(key)) continue;
+
+    bills.push({
+      id: uid(),
+      name: f.name,
+      valueCents: safeCents(f.valueCents),
+      dueDate: dueDateForMonth(monthKey, f.dueDay),
+      categoryId: f.categoryId,
+      accountId: f.accountId,
+      status: "pending",
+      fixed: true,
+      recurrence: f.recurrence,
+      fixedAccountId: f.id,
+      occurrenceKey: key,
+      paidDate: null,
+      paymentId: null,
+      paymentAccountId: f.accountId || "",
+      paidTransactionId: null,
+    });
+    existing.add(key);
+  }
+
+  return { ...next, bills };
+}
 
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : "id-" + Math.random().toString(36).slice(2) + Date.now());
 
@@ -91,8 +272,8 @@ const DEFAULT_CATEGORIES = [
 ];
 
 const DEFAULT_ACCOUNTS = [
-  { id: "acc-nubank", name: "Nubank", institution: "Nu Pagamentos", initialBalanceCents: 150000, type: "corrente", color: "#820AD1" },
-  { id: "acc-inter", name: "Inter", institution: "Banco Inter", initialBalanceCents: 80000, type: "corrente", color: "#FF7A00" },
+  { id: "acc-nubank", name: "Nubank", institution: "Nu Pagamentos", type: "corrente", color: "#820AD1" },
+  { id: "acc-inter", name: "Inter", institution: "Banco Inter", type: "corrente", color: "#FF7A00" },
 ];
 
 const DEFAULT_CARDS = [
@@ -102,19 +283,33 @@ const DEFAULT_CARDS = [
 
 function seedData() {
   const today = isoToday();
-
-  // Conta nova começa realmente zerada. As categorias são apenas categorias
-  // padrão e não representam dinheiro/dados de outro usuário.
+  const t1 = { id: uid(), description: "Salário", valueCents: 500000, type: "income", categoryId: "cat-salario", accountId: "acc-nubank", date: addMonthsISO(today, 0).slice(0, 8) + "05", status: "paid", note: "", transfer: false };
+  const t2 = { id: uid(), description: "Mercado", valueCents: 65000, type: "expense", categoryId: "cat-alimentacao", accountId: "acc-nubank", date: today, status: "paid", note: "", transfer: false };
+  const t3 = { id: uid(), description: "Internet", valueCents: 12000, type: "expense", categoryId: "cat-casa", accountId: "acc-inter", date: today, status: "paid", note: "", transfer: false };
   return {
-    categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
-    accounts: [],
-    cards: [],
-    transactions: [],
+    categories: DEFAULT_CATEGORIES,
+    accounts: DEFAULT_ACCOUNTS,
+    cards: DEFAULT_CARDS,
+    transactions: [t1, t2, t3],
+    fixedAccounts: [
+      { id: "fixed-aluguel", name: "Aluguel", valueCents: 110000, dueDay: 28, categoryId: "cat-casa", accountId: "acc-nubank", recurrence: "monthly", startDate: today.slice(0,7)+"-01", active: true },
+      { id: "fixed-academia", name: "Academia", valueCents: 9000, dueDay: 15, categoryId: "cat-saude", accountId: "acc-inter", recurrence: "monthly", startDate: today.slice(0,7)+"-01", active: true },
+    ],
     bills: [],
-    cardPurchases: [],
+    cardPurchases: [
+      { id: uid(), description: "Notebook", valueCents: 360000, cardId: "card-nubank", categoryId: "cat-compras", date: today, installments: 12, installmentValueCents: 30000, note: "" },
+      { id: uid(), description: "Restaurante", valueCents: 8500, cardId: "card-inter", categoryId: "cat-alimentacao", date: today, installments: 1, installmentValueCents: 8500, note: "" },
+    ],
     invoicePayments: {},
-    investments: [],
-    goals: [],
+    investments: [
+      { id: uid(), name: "Tesouro Selic 2029", category: "Renda fixa", institution: "Tesouro Direto", investedCents: 500000, currentCents: 538000, date: addMonthsISO(today, -6), note: "" },
+      { id: uid(), name: "Bitcoin", category: "Cripto", institution: "Corretora", investedCents: 200000, currentCents: 176000, date: addMonthsISO(today, -3), note: "" },
+      { id: uid(), name: "PETR4", category: "Ações", institution: "Corretora", investedCents: 300000, currentCents: 342000, date: addMonthsISO(today, -8), note: "" },
+    ],
+    goals: [
+      { id: uid(), name: "Comprar carro", targetCents: 3000000, currentCents: 1200000, deadline: addMonthsISO(today, 10), category: "Compras", description: "" },
+      { id: uid(), name: "Reserva de emergência", targetCents: 1500000, currentCents: 900000, deadline: addMonthsISO(today, 6), category: "Finanças", description: "" },
+    ],
     settings: { theme: "dark", activeMonth: today.slice(0, 7), closedMonths: [] },
   };
 }
@@ -126,91 +321,48 @@ function seedData() {
 async function loadState() {
   try {
     const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      if (typeof window !== "undefined") window.location.href = "/login";
-      return null;
+    if (userError || !user) { if (typeof window !== "undefined") window.location.href = "/login"; return null; }
+    const userCacheKey = `${LOCAL_CACHE_KEY}:${user.id}`;
+    if (typeof window !== "undefined") {
+      const cached = window.localStorage.getItem(userCacheKey);
+      if (cached) {
+        try { const parsed = JSON.parse(cached); if (parsed) return ensureFixedOccurrences(parsed); } catch {}
+      }
     }
-
-    // O estado financeiro é SEMPRE buscado pela chave do usuário autenticado.
-    // Isso impede que um usuário veja os dados de outro.
-    const { data: row, error } = await supabase
-      .from("finance_user_data")
-      .select("data")
-      .eq("user_id", user.id)
-      .maybeSingle();
-
+    const { data: row, error } = await supabase.from("finance_user_data").select("*").eq("user_id", user.id).maybeSingle();
     if (error) throw error;
-
-    if (row?.data && typeof row.data === "object") {
-      return normalizeState(row.data);
-    }
-
-    // Primeiro acesso: cria um espaço totalmente vazio e exclusivo deste usuário.
-    const initial = seedData();
-    const { error: insertError } = await supabase
-      .from("finance_user_data")
-      .insert({
-        user_id: user.id,
-        data: initial,
-        updated_at: new Date().toISOString(),
-      });
-
-    if (insertError && insertError.code !== "23505") throw insertError;
-    return initial;
+    let state = row?.data && typeof row.data === "object" ? row.data : row ? {
+      categories: DEFAULT_CATEGORIES, accounts: row.accounts || [], cards: row.cards || [], transactions: row.transactions || [],
+      bills: row.bills || [], fixedAccounts: row.fixedAccounts || [], cardPurchases: row.purchases || [], invoicePayments: row.invoicePayments || {},
+      investments: row.investments || [], goals: row.goals || [], settings: { theme: row.theme === "light" ? "light" : "dark", activeMonth: row.activeMonth || isoToday().slice(0,7), closedMonths: row.closedMonths || [] }
+    } : seedData();
+    state = ensureFixedOccurrences(normalizeState(state));
+    if (typeof window !== "undefined") window.localStorage.setItem(userCacheKey, JSON.stringify(state));
+    if (!row) await supabase.from("finance_user_data").upsert({ user_id: user.id, data: state, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    return state;
   } catch (e) {
     console.error("Erro ao carregar dados financeiros:", e);
+    if (typeof window !== "undefined") {
+      try { const cached = JSON.parse(window.localStorage.getItem(LOCAL_CACHE_KEY) || "null"); if (cached) return ensureFixedOccurrences(cached); } catch {}
+    }
     return null;
   }
 }
 
-function normalizeState(raw) {
-  const empty = seedData();
-  const settings = raw?.settings || {};
-
-  return {
-    categories: Array.isArray(raw?.categories) ? raw.categories : empty.categories,
-    accounts: Array.isArray(raw?.accounts) ? raw.accounts : [],
-    cards: Array.isArray(raw?.cards) ? raw.cards : [],
-    transactions: Array.isArray(raw?.transactions) ? raw.transactions : [],
-    bills: Array.isArray(raw?.bills) ? raw.bills : [],
-    cardPurchases: Array.isArray(raw?.cardPurchases) ? raw.cardPurchases : [],
-    invoicePayments: raw?.invoicePayments && typeof raw.invoicePayments === "object" ? raw.invoicePayments : {},
-    investments: Array.isArray(raw?.investments) ? raw.investments : [],
-    goals: Array.isArray(raw?.goals) ? raw.goals : [],
-    settings: {
-      theme: settings.theme === "light" ? "light" : "dark",
-      activeMonth: /^\d{4}-\d{2}$/.test(settings.activeMonth || "") ? settings.activeMonth : empty.settings.activeMonth,
-      closedMonths: Array.isArray(settings.closedMonths) ? settings.closedMonths : [],
-    },
-  };
-}
-
 async function saveState(state) {
+  if (!state) return false;
+  const normalized = normalizeState(state);
   try {
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-    if (userError || !user || !state) return false;
-
-    // Salva somente na linha pertencente ao usuário autenticado.
-    const safeState = normalizeState(state);
-    const { error } = await supabase
-      .from("finance_user_data")
-      .upsert(
-        {
-          user_id: user.id,
-          data: safeState,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id" }
-      );
-
-    if (error) throw error;
-    return true;
-  } catch (e) {
-    console.error("Erro ao salvar dados financeiros:", e);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return false;
+    const userCacheKey = `${LOCAL_CACHE_KEY}:${user.id}`;
+    if (typeof window !== "undefined") window.localStorage.setItem(userCacheKey, JSON.stringify(normalized));
+    const payload = { user_id: user.id, data: normalized, updated_at: new Date().toISOString() };
+    const { error } = await supabase.from("finance_user_data").upsert(payload, { onConflict: "user_id" });
+    if (!error) return true;
+    console.error("Erro ao salvar no Supabase:", error);
     return false;
-  }
+  } catch (e) { console.error("Erro ao salvar dados financeiros:", e); return false; }
 }
 
 
@@ -437,7 +589,7 @@ function Modal({ open, onClose, title, children, width = 520, footer }) {
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <h3 className="mf-display" style={{ fontSize: 19, margin: 0 }}>{title}</h3>
-          <button aria-label="Fechar" className="mf-focus" onClick={onClose} style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 9, width: 36, height: 36, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, cursor: "pointer", color: "var(--text)" }}>
+          <button aria-label="Fechar" className="mf-focus" onClick={onClose} style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--text)" }}>
             <X size={16} />
           </button>
         </div>
@@ -504,7 +656,7 @@ function IconBadge({ icon, color }) {
 function ChartTooltip({ active, payload, label, formatter }) {
   if (!active || !payload || !payload.length) return null;
   return (
-    <div className="mf-card" style={{ padding: "8px 12px", fontSize: 12.5, border: "1px solid var(--border)" }}>
+    <div style={{ padding: "9px 12px", fontSize: 12.5, border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2)", color: "var(--text)", boxShadow: "0 10px 28px rgba(0,0,0,.18)" }}>
       {label && <div style={{ color: "var(--text-muted)", marginBottom: 4, fontWeight: 600 }}>{label}</div>}
       {payload.map((p, i) => (
         <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text)" }}>
@@ -588,14 +740,7 @@ export default function MeuFinanceiro() {
         return;
       }
 
-      setData({
-        ...d,
-        settings: {
-          theme: d.settings?.theme === "light" ? "light" : "dark",
-          activeMonth: d.settings?.activeMonth || isoToday().slice(0, 7),
-          closedMonths: Array.isArray(d.settings?.closedMonths) ? d.settings.closedMonths : []
-        }
-      });
+      setData(ensureFixedOccurrences(d, isoToday().slice(0, 7)));
       setLoaded(true);
     })();
 
@@ -610,6 +755,21 @@ export default function MeuFinanceiro() {
     saveTimer.current = setTimeout(() => { saveState(data); }, 350);
     return () => clearTimeout(saveTimer.current);
   }, [data, loaded]);
+
+  // Se o navegador ficou aberto quando virou o mês, cria apenas a nova
+  // ocorrência idempotente. Não cria transações nem pagamentos.
+  useEffect(() => {
+    if (!loaded || !data) return;
+    const currentMonth = isoToday().slice(0, 7);
+    setData((d) => {
+      const activeMonth = d.settings?.activeMonth;
+      const nextActiveMonth = activeMonth && activeMonth >= currentMonth ? activeMonth : currentMonth;
+      return ensureFixedOccurrences({
+        ...d,
+        settings: { ...(d.settings || {}), activeMonth: nextActiveMonth },
+      }, nextActiveMonth);
+    });
+  }, [loaded]);
 
   const theme = data?.settings?.theme || "dark";
 
@@ -738,36 +898,37 @@ function ThemeToggle({ theme, onToggle }) {
 
 function useFinance(data) {
   return useMemo(() => {
-    const { transactions, accounts, categories } = data;
-
+    const transactions = Array.isArray(data.transactions) ? data.transactions : [];
+    const bills = Array.isArray(data.bills) ? data.bills : [];
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    const categories = Array.isArray(data.categories) ? data.categories : [];
     const accountBalance = (accId) => {
-      const acc = accounts.find((a) => a.id === accId);
-      if (!acc) return 0;
-      let bal = acc.initialBalanceCents;
+      let bal = 0;
       for (const t of transactions) {
         if (t.accountId !== accId || t.status !== "paid") continue;
-        bal += t.type === "income" ? t.valueCents : -t.valueCents;
+        bal += t.type === "income" ? safeCents(t.valueCents) : -safeCents(t.valueCents);
+      }
+      for (const b of bills) {
+        if (b.status !== "paid" || (b.paymentAccountId || b.accountId) !== accId) continue;
+        bal -= safeCents(b.valueCents);
       }
       return bal;
     };
-
     const totalBalance = accounts.reduce((s, a) => s + accountBalance(a.id), 0);
-
     const inRange = (iso, start, end) => (!start || iso >= start) && (!end || iso <= end);
-
     const periodTotals = (start, end) => {
       let income = 0, expense = 0;
       for (const t of transactions) {
-        if (t.status !== "paid" || t.transfer) continue;
-        if (!inRange(t.date, start, end)) continue;
-        if (t.type === "income") income += t.valueCents; else expense += t.valueCents;
+        if (t.status !== "paid" || t.transfer || !inRange(t.date, start, end)) continue;
+        if (t.type === "income") income += safeCents(t.valueCents); else expense += safeCents(t.valueCents);
+      }
+      for (const b of bills) {
+        if (b.status === "paid" && inRange(b.paidDate || b.dueDate, start, end)) expense += safeCents(b.valueCents);
       }
       return { income, expense, savings: income - expense };
     };
-
     const categoryName = (id) => categories.find((c) => c.id === id)?.name || "Sem categoria";
     const categoryOf = (id) => categories.find((c) => c.id === id);
-
     return { accountBalance, totalBalance, periodTotals, categoryName, categoryOf };
   }, [data]);
 }
@@ -799,34 +960,81 @@ function Dashboard({ data, setData, goTab }) {
   const periodEnd = activeMonth === today.slice(0, 7) ? today : monthEnd;
   const { income, expense, savings } = fin.periodTotals(monthStart, periodEnd);
 
-  const recent = [...data.transactions].sort((a, b) => (b.date > a.date ? 1 : -1)).slice(0, 6);
-  const upcoming = data.bills.filter((b) => b.status === "pending").sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1)).slice(0, 5);
+  const recent = [...data.transactions]
+    .sort((a, b) => (b.date > a.date ? 1 : -1))
+    .slice(0, 6);
+
+  const upcoming = data.bills
+    .filter((b) => b.status === "pending" && monthKeyOf(b.dueDate) === activeMonth)
+    .sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1))
+    .slice(0, 5);
+
+  const fixedThisMonth = data.bills
+    .filter((b) => b.fixed && monthKeyOf(b.dueDate) === activeMonth)
+    .sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
+
+  const toggleBillPayment = (billId) => {
+    setData((d) => {
+      const bill = d.bills.find((b) => b.id === billId);
+      if (!bill) return d;
+
+      if (bill.status === "paid") {
+        return {
+          ...d,
+          bills: d.bills.map((b) => b.id === billId
+            ? { ...b, status: "pending", paidDate: null, paymentId: null }
+            : b),
+        };
+      }
+
+      return {
+        ...d,
+        bills: d.bills.map((b) => b.id === billId
+          ? {
+              ...b,
+              status: "paid",
+              paidDate: isoToday(),
+              paymentId: b.paymentId || uid(),
+              paymentAccountId: b.paymentAccountId || b.accountId || "",
+            }
+          : b),
+      };
+    });
+  };
 
   const catSpend = useMemo(() => {
     const map = {};
     for (const t of data.transactions) {
       if (t.type !== "expense" || t.status !== "paid" || t.transfer) continue;
       if (monthKeyOf(t.date) !== activeMonth) continue;
-      map[t.categoryId] = (map[t.categoryId] || 0) + t.valueCents;
+      map[t.categoryId] = (map[t.categoryId] || 0) + safeCents(t.valueCents);
     }
-    return Object.entries(map).map(([id, v]) => ({ id, name: fin.categoryName(id), value: v / 100, color: fin.categoryOf(id)?.color || "#888" }))
-      .sort((a, b) => b.value - a.value).slice(0, 6);
-  }, [data, fin]);
+    for (const b of data.bills || []) {
+      if (b.status !== "paid" || monthKeyOf(b.paidDate || b.dueDate) !== activeMonth) continue;
+      map[b.categoryId] = (map[b.categoryId] || 0) + safeCents(b.valueCents);
+    }
+    return Object.entries(map)
+      .map(([id, v]) => ({ id, name: fin.categoryName(id), value: v / 100, color: fin.categoryOf(id)?.color || "#888" }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 6);
+  }, [data, fin, activeMonth]);
 
-  const evolution = useMemo(() => buildEvolution(data.transactions), [data.transactions]);
+  const evolution = useMemo(() => buildEvolution(data), [data]);
 
   const closeMonth = () => {
     const nextMonth = addMonthsISO(activeMonth + "-01", 1).slice(0, 7);
-    const ok = window.confirm(`Fechar ${monthLabel(activeMonth)}?\n\nNada será apagado. O mês ficará no histórico e o painel passará para ${monthLabel(nextMonth)}. Parcelas futuras continuam normalmente.`);
+    const ok = window.confirm(
+      `Fechar ${monthLabel(activeMonth)}?\n\nNada será apagado. O mês ficará no histórico e o painel passará para ${monthLabel(nextMonth)}. Parcelas futuras continuam normalmente.`
+    );
     if (!ok) return;
-    setData((d) => ({
+    setData((d) => ensureFixedOccurrences({
       ...d,
       settings: {
         ...(d.settings || {}),
         activeMonth: nextMonth,
-        closedMonths: Array.from(new Set([...(d.settings?.closedMonths || []), activeMonth]))
-      }
-    }));
+        closedMonths: Array.from(new Set([...(d.settings?.closedMonths || []), activeMonth])),
+      },
+    }, nextMonth));
   };
 
   return (
@@ -834,10 +1042,11 @@ function Dashboard({ data, setData, goTab }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         <div>
           <div className="mf-display" style={{ fontSize: 15.5, fontWeight: 600 }}>Mês ativo: {monthLabel(activeMonth)}</div>
-          <div style={{ fontSize: 12, color: "var(--text-faint)" }}>Fechar o mês arquiva o período sem apagar seus dados.</div>
+          <div style={{ fontSize: 12, color: "var(--text-faint)" }}>Ao virar o mês, os indicadores mensais começam novamente. O saldo bancário não zera.</div>
         </div>
         <button className="mf-btn mf-btn-ghost mf-focus" onClick={closeMonth}>Fechar mês</button>
       </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 20 }}>
         <StatCard label="Saldo" valueCents={fin.totalBalance} icon={Wallet} tone="neutral" />
         <StatCard label="Entradas (mês)" valueCents={income} icon={ArrowUpCircle} tone="income" />
@@ -879,18 +1088,36 @@ function Dashboard({ data, setData, goTab }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }} className="mf-grid-2">
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }} className="mf-grid-2">
         <div className="mf-card" style={{ padding: 18 }}>
-          <SectionTitle title="Últimos lançamentos" action={<LinkBtn onClick={() => goTab("transactions")}>Ver todas</LinkBtn>} />
-          {recent.length === 0 ? <EmptyState icon={ArrowLeftRight} title="Nenhum lançamento" description="Adicione sua primeira transação." /> : (
+          <SectionTitle title="Contas fixas do mês" subtitle={`${fixedThisMonth.length} ocorrência(s) · ${monthLabel(activeMonth)}`} action={<LinkBtn onClick={() => goTab("accounts")}>Ver contas</LinkBtn>} />
+          {fixedThisMonth.length === 0 ? (
+            <EmptyState icon={Landmark} title="Nenhuma conta fixa" description="Cadastre aluguel, internet, luz e outras recorrências." />
+          ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {recent.map((t) => <TxRow key={t.id} t={t} cat={fin.categoryOf(t.categoryId)} />)}
+              {fixedThisMonth.map((b) => (
+                <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid var(--border)", flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 130 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{b.name}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>vence {fmtDateBR(b.dueDate)} · {b.status === "paid" ? "Paga" : "Pendente"}</div>
+                  </div>
+                  <Money cents={b.valueCents} weight={700} />
+                  <button
+                    className={`mf-btn ${b.status === "paid" ? "mf-btn-ghost" : "mf-btn-primary"} mf-focus`}
+                    style={{ padding: "6px 9px", fontSize: 11.5 }}
+                    onClick={() => toggleBillPayment(b.id)}
+                  >
+                    {b.status === "paid" ? "Marcar como pendente" : "Marcar como paga"}
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>
+
         <div className="mf-card" style={{ padding: 18 }}>
           <SectionTitle title="Próximas contas" action={<LinkBtn onClick={() => goTab("accounts")}>Gerenciar</LinkBtn>} />
-          {upcoming.length === 0 ? <EmptyState icon={Landmark} title="Tudo em dia" description="Nenhuma conta pendente no momento." /> : (
+          {upcoming.length === 0 ? <EmptyState icon={Landmark} title="Tudo em dia" description="Nenhuma conta pendente neste mês." /> : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {upcoming.map((b) => (
                 <div key={b.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -905,6 +1132,15 @@ function Dashboard({ data, setData, goTab }) {
           )}
         </div>
       </div>
+
+      <div className="mf-card" style={{ padding: 18 }}>
+        <SectionTitle title="Últimos lançamentos" action={<LinkBtn onClick={() => goTab("transactions")}>Ver todas</LinkBtn>} />
+        {recent.length === 0 ? <EmptyState icon={ArrowLeftRight} title="Nenhum lançamento" description="Adicione sua primeira transação." /> : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {recent.map((t) => <TxRow key={t.id} t={t} cat={fin.categoryOf(t.categoryId)} />)}
+          </div>
+        )}
+      </div>
       <style>{`@media (max-width: 760px) { .mf-grid-2 { grid-template-columns: 1fr !important; } }`}</style>
     </div>
   );
@@ -914,7 +1150,9 @@ function inCurrentMonth(iso) {
   return iso.slice(0, 7) === isoToday().slice(0, 7);
 }
 
-function buildEvolution(transactions) {
+function buildEvolution(data) {
+  const transactions = data.transactions || [];
+  const bills = data.bills || [];
   const months = [];
   for (let i = 5; i >= 0; i--) months.push(monthKeyOf(addMonthsISO(isoToday(), -i)));
   return months.map((mk) => {
@@ -922,7 +1160,10 @@ function buildEvolution(transactions) {
     for (const t of transactions) {
       if (t.status !== "paid" || t.transfer) continue;
       if (monthKeyOf(t.date) !== mk) continue;
-      if (t.type === "income") income += t.valueCents; else expense += t.valueCents;
+      if (t.type === "income") income += safeCents(t.valueCents); else expense += safeCents(t.valueCents);
+    }
+    for (const b of bills) {
+      if (b.status === "paid" && monthKeyOf(b.paidDate || b.dueDate) === mk) expense += safeCents(b.valueCents);
     }
     return { key: mk, label: monthLabel(mk), income, expense, savings: income - expense };
   });
@@ -964,164 +1205,23 @@ function TxRow({ t, cat }) {
    TRANSAÇÕES
    ========================================================================= */
 
-function emptyTx() {
-  return { id: null, description: "", value: "", type: "expense", categoryId: "", accountId: "", date: isoToday(), status: "paid", note: "" };
-}
+function emptyTx() { return { id: null, description: "", value: "", type: "expense", categoryId: "", accountId: "", date: isoToday(), note: "" }; }
 
 function Transactions({ data, setData }) {
-  const toast = useToast();
-  const fin = useFinance(data);
-  const [modal, setModal] = useState(false);
-  const [form, setForm] = useState(emptyTx());
-  const [errors, setErrors] = useState({});
-  const [confirmId, setConfirmId] = useState(null);
-  const [search, setSearch] = useState("");
-  const [filterType, setFilterType] = useState("all");
-  const [sortDesc, setSortDesc] = useState(true);
-  const [transferModal, setTransferModal] = useState(false);
-
+  const toast = useToast(); const fin = useFinance(data);
+  const [modal, setModal] = useState(false), [form, setForm] = useState(emptyTx()), [errors, setErrors] = useState({}), [confirmId, setConfirmId] = useState(null), [search, setSearch] = useState(""), [filterType, setFilterType] = useState("all"), [sortDesc, setSortDesc] = useState(true), [transferModal, setTransferModal] = useState(false);
   const openNew = () => { setForm(emptyTx()); setErrors({}); setModal(true); };
-  const openEdit = (t) => {
-    setForm({ ...t, value: (t.valueCents / 100).toFixed(2).replace(".", ",") });
-    setErrors({}); setModal(true);
-  };
-
-  const validate = () => {
-    const e = {};
-    if (!form.description.trim()) e.description = "Descrição obrigatória";
-    if (toCents(form.value) <= 0) e.value = "Valor precisa ser maior que zero";
-    if (!form.categoryId) e.categoryId = "Selecione uma categoria";
-    if (!form.accountId) e.accountId = "Selecione uma conta";
-    if (!form.date) e.date = "Data obrigatória";
-    setErrors(e);
-    return Object.keys(e).length === 0;
-  };
-
-  const save = () => {
-    if (!validate()) return;
-    const valueCents = toCents(form.value);
-    if (form.id) {
-      setData((d) => ({ ...d, transactions: d.transactions.map((t) => t.id === form.id ? { ...t, description: form.description.trim(), valueCents, type: form.type, categoryId: form.categoryId, accountId: form.accountId, date: form.date, status: form.status, note: form.note } : t) }));
-      toast("Transação atualizada.");
-    } else {
-      setData((d) => ({ ...d, transactions: [...d.transactions, { id: uid(), description: form.description.trim(), valueCents, type: form.type, categoryId: form.categoryId, accountId: form.accountId, date: form.date, status: form.status, note: form.note, transfer: false }] }));
-      toast("Transação adicionada.");
-    }
-    setModal(false);
-  };
-
-  const remove = (id) => {
-    setData((d) => ({ ...d, transactions: d.transactions.filter((t) => t.id !== id) }));
-    toast("Transação removida.");
-    setConfirmId(null);
-  };
-
-  const list = useMemo(() => {
-    let arr = data.transactions;
-    if (filterType !== "all") arr = arr.filter((t) => t.type === filterType);
-    if (search.trim()) {
-      const s = search.toLowerCase();
-      arr = arr.filter((t) => t.description.toLowerCase().includes(s));
-    }
-    arr = [...arr].sort((a, b) => sortDesc ? (a.date < b.date ? 1 : -1) : (a.date > b.date ? 1 : -1));
-    return arr;
-  }, [data.transactions, filterType, search, sortDesc]);
-
-  return (
-    <div className="mf-anim-in">
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
-        <div style={{ position: "relative", flex: "1 1 200px", minWidth: 160 }}>
-          <Search size={15} style={{ position: "absolute", left: 11, top: 11, color: "var(--text-faint)" }} />
-          <input className="mf-input" style={{ paddingLeft: 34 }} placeholder="Pesquisar transações…" value={search} onChange={(e) => setSearch(e.target.value)} />
-        </div>
-        <SegTabs value={filterType} onChange={setFilterType} options={[{ value: "all", label: "Todas" }, { value: "income", label: "Entradas" }, { value: "expense", label: "Saídas" }]} />
-        <button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setSortDesc((s) => !s)}><Filter size={14} /> {sortDesc ? "Mais recentes" : "Mais antigas"}</button>
-        <button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setTransferModal(true)}><ArrowRightLeft size={14} /> Transferir</button>
-        <button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={15} /> Nova transação</button>
-      </div>
-
-      {list.length === 0 ? (
-        <EmptyState icon={ArrowLeftRight} title="Nenhuma transação encontrada" description="Adicione uma transação ou ajuste os filtros de pesquisa." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14} /> Nova transação</button>} />
-      ) : (
-        <div className="mf-card" style={{ overflow: "hidden" }}>
-          {list.map((t, idx) => {
-            const cat = fin.categoryOf(t.categoryId);
-            const acc = data.accounts.find((a) => a.id === t.accountId);
-            return (
-              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px", borderTop: idx === 0 ? "none" : "1px solid var(--border)" }}>
-                <IconBadge icon={cat?.icon || "💸"} color={cat?.color || "#888"} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    {t.description}
-                    {t.transfer && <Badge color="var(--text-faint)">transferência</Badge>}
-                    {t.status === "pending" && <Badge color="var(--gold)">pendente</Badge>}
-                  </div>
-                  <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>{fmtDateBR(t.date)} · {cat?.name} · {acc?.name}</div>
-                </div>
-                <Money cents={t.type === "income" ? t.valueCents : -t.valueCents} sign weight={700} size={14} />
-                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                  <IconBtn onClick={() => openEdit(t)}><Pencil size={14} /></IconBtn>
-                  <IconBtn onClick={() => setConfirmId(t.id)} danger><Trash2 size={14} /></IconBtn>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <Modal open={modal} onClose={() => setModal(false)} title={form.id ? "Editar transação" : "Nova transação"} footer={
-        <>
-          <button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setModal(false)}>Cancelar</button>
-          <button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button>
-        </>
-      }>
-        <SegTabs value={form.type} onChange={(v) => setForm((f) => ({ ...f, type: v }))} options={[{ value: "expense", label: "Saída" }, { value: "income", label: "Entrada" }]} />
-        <div style={{ height: 14 }} />
-        <Field label="Descrição">
-          <input className="mf-input" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Ex: Mercado, Salário…" />
-          {errors.description && <ErrorText>{errors.description}</ErrorText>}
-        </Field>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Valor (R$)">
-            <input className="mf-input" inputMode="decimal" value={form.value} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} placeholder="0,00" />
-            {errors.value && <ErrorText>{errors.value}</ErrorText>}
-          </Field>
-          <Field label="Data">
-            <input className="mf-input" type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
-            {errors.date && <ErrorText>{errors.date}</ErrorText>}
-          </Field>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Categoria">
-            <select className="mf-input" value={form.categoryId} onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value }))}>
-              <option value="">Selecione…</option>
-              {data.categories.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
-            </select>
-            {errors.categoryId && <ErrorText>{errors.categoryId}</ErrorText>}
-          </Field>
-          <Field label="Conta">
-            <select className="mf-input" value={form.accountId} onChange={(e) => setForm((f) => ({ ...f, accountId: e.target.value }))}>
-              <option value="">Selecione…</option>
-              {data.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
-            {errors.accountId && <ErrorText>{errors.accountId}</ErrorText>}
-          </Field>
-        </div>
-        <Field label="Status">
-          <SegTabs value={form.status} onChange={(v) => setForm((f) => ({ ...f, status: v }))} options={[{ value: "paid", label: "Paga" }, { value: "pending", label: "Pendente" }]} />
-        </Field>
-        <Field label="Observação (opcional)">
-          <input className="mf-input" value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} />
-        </Field>
-      </Modal>
-
-      <TransferModal open={transferModal} onClose={() => setTransferModal(false)} data={data} setData={setData} toast={toast} />
-
-      <ConfirmDialog open={!!confirmId} title="Excluir transação"
-        message={`Excluir "${data.transactions.find((t) => t.id === confirmId)?.description || ""}"? Essa ação não pode ser desfeita.`}
-        onCancel={() => setConfirmId(null)} onConfirm={() => remove(confirmId)} />
-    </div>
-  );
+  const openEdit = (t) => { setForm({ ...t, value: (safeCents(t.valueCents) / 100).toFixed(2).replace(".", ",") }); setErrors({}); setModal(true); };
+  const validate = () => { const e = {}; if (!safeString(form.description).trim()) e.description = "Descrição obrigatória"; if (toCents(form.value) <= 0) e.value = "Valor precisa ser maior que zero"; if (!form.categoryId) e.categoryId = "Selecione uma categoria"; if (!form.accountId) e.accountId = "Selecione uma conta"; if (!form.date) e.date = "Data obrigatória"; setErrors(e); return !Object.keys(e).length; };
+  const save = () => { if (!validate()) return; const valueCents = toCents(form.value); setData((d) => ({ ...d, transactions: form.id ? d.transactions.map((t) => t.id === form.id ? { ...t, description: form.description.trim(), valueCents, type: form.type, categoryId: form.categoryId, accountId: form.accountId, date: form.date, note: form.note || "", status: "paid", transfer: !!t.transfer } : t) : [...d.transactions, { id: uid(), description: form.description.trim(), valueCents, type: form.type, categoryId: form.categoryId, accountId: form.accountId, date: form.date, status: "paid", note: form.note || "", transfer: false }] })); toast(form.id ? "Transação atualizada." : "Transação adicionada."); setModal(false); };
+  const remove = (id) => { setData((d) => ({ ...d, transactions: d.transactions.filter((t) => t.id !== id) })); toast("Transação removida."); setConfirmId(null); };
+  const list = useMemo(() => { let arr = data.transactions.filter((t) => !t.sourceBillId && !t.sourceBillOccurrenceId); if (filterType !== "all") arr = arr.filter((t) => t.type === filterType); const s = search.trim().toLowerCase(); if (s) arr = arr.filter((t) => safeString(t.description).toLowerCase().includes(s)); return [...arr].sort((a,b) => sortDesc ? (a.date < b.date ? 1 : -1) : (a.date > b.date ? 1 : -1)); }, [data.transactions, filterType, search, sortDesc]);
+  return <div className="mf-anim-in">
+    <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:16, alignItems:"center" }}><div style={{position:"relative",flex:"1 1 200px",minWidth:160}}><Search size={15} style={{position:"absolute",left:11,top:11,color:"var(--text-faint)"}}/><input className="mf-input" style={{paddingLeft:34}} placeholder="Pesquisar transações…" value={search} onChange={(e)=>setSearch(e.target.value)}/></div><SegTabs value={filterType} onChange={setFilterType} options={[{value:"all",label:"Todas"},{value:"income",label:"Entradas"},{value:"expense",label:"Saídas"}]}/><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setSortDesc(s=>!s)}><Filter size={14}/> {sortDesc?"Mais recentes":"Mais antigas"}</button><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setTransferModal(true)}><ArrowRightLeft size={14}/> Transferir</button><button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={15}/> Nova transação</button></div>
+    {list.length===0?<EmptyState icon={ArrowLeftRight} title="Nenhuma transação encontrada" description="Adicione uma transação ou ajuste os filtros de pesquisa." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14}/> Nova transação</button>}/>:<div className="mf-card" style={{overflow:"hidden"}}>{list.map((t,idx)=>{const cat=fin.categoryOf(t.categoryId),acc=data.accounts.find(a=>a.id===t.accountId);return <div key={t.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderTop:idx===0?"none":"1px solid var(--border)"}}><IconBadge icon={cat?.icon||"💸"} color={cat?.color||"#888"}/><div style={{flex:1,minWidth:0}}><div style={{fontWeight:600,fontSize:13.5}}>{t.description}</div><div style={{fontSize:11.5,color:"var(--text-faint)"}}>{fmtDateBR(t.date)} · {cat?.name||"—"} · {acc?.name||"—"}</div></div><Money cents={t.type==="income"?t.valueCents:-t.valueCents} sign weight={700} size={14}/><div style={{display:"flex",gap:4}}><IconBtn onClick={()=>openEdit(t)}><Pencil size={14}/></IconBtn><IconBtn onClick={()=>setConfirmId(t.id)} danger><Trash2 size={14}/></IconBtn></div></div>})}</div>}
+    <Modal open={modal} onClose={()=>setModal(false)} title={form.id?"Editar transação":"Nova transação"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button></>}><SegTabs value={form.type} onChange={v=>setForm(f=>({...f,type:v}))} options={[{value:"expense",label:"Saída"},{value:"income",label:"Entrada"}]}/><div style={{height:14}}/><Field label="Descrição"><input className="mf-input" value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Ex: Mercado, Salário…"/>{errors.description&&<ErrorText>{errors.description}</ErrorText>}</Field><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Valor (R$)"><input className="mf-input" inputMode="decimal" value={form.value} onChange={e=>setForm(f=>({...f,value:e.target.value}))} placeholder="0,00"/>{errors.value&&<ErrorText>{errors.value}</ErrorText>}</Field><Field label="Data"><input className="mf-input" type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>{errors.date&&<ErrorText>{errors.date}</ErrorText>}</Field></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Categoria"><select className="mf-input" value={form.categoryId} onChange={e=>setForm(f=>({...f,categoryId:e.target.value}))}><option value="">Selecione…</option>{data.categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}</select>{errors.categoryId&&<ErrorText>{errors.categoryId}</ErrorText>}</Field><Field label="Conta"><select className="mf-input" value={form.accountId} onChange={e=>setForm(f=>({...f,accountId:e.target.value}))}><option value="">Selecione…</option>{data.accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select>{errors.accountId&&<ErrorText>{errors.accountId}</ErrorText>}</Field></div><Field label="Observação (opcional)"><input className="mf-input" value={form.note||""} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/></Field></Modal>
+    <TransferModal open={transferModal} onClose={()=>setTransferModal(false)} data={data} setData={setData} toast={toast}/><ConfirmDialog open={!!confirmId} title="Excluir transação" message={`Excluir "${data.transactions.find(t=>t.id===confirmId)?.description||""}"? Essa ação não pode ser desfeita.`} onCancel={()=>setConfirmId(null)} onConfirm={()=>remove(confirmId)}/>
+  </div>;
 }
 
 function TransferModal({ open, onClose, data, setData, toast }) {
@@ -1199,125 +1299,25 @@ function IconBtn({ children, onClick, danger }) {
 
 const ACCOUNT_COLORS = ["#820AD1", "#FF7A00", "#0F8F86", "#2FAE7C", "#DC5B4B", "#C9A227", "#3EA6D9", "#8C97AD"];
 
-function emptyAccount() { return { id: null, name: "", institution: "", initialBalance: "", type: "corrente", color: ACCOUNT_COLORS[0] }; }
+function emptyAccount() { return { id: null, name: "", institution: "", type: "corrente", color: ACCOUNT_COLORS[0] }; }
 
 function Accounts({ data, setData }) {
   const [subTab, setSubTab] = useState("contas");
-  return (
-    <div className="mf-anim-in">
-      <div style={{ marginBottom: 18 }}>
-        <SegTabs value={subTab} onChange={setSubTab} options={[{ value: "contas", label: "Contas bancárias" }, { value: "bills", label: "Contas a pagar" }]} />
-      </div>
-      {subTab === "contas" ? <AccountsList data={data} setData={setData} /> : <Bills data={data} setData={setData} />}
-    </div>
-  );
+  return <div className="mf-anim-in"><div style={{marginBottom:18}}><SegTabs value={subTab} onChange={setSubTab} options={[{value:"contas",label:"Contas bancárias"},{value:"bills",label:"Contas a pagar"},{value:"fixed",label:"Contas Fixas"}]}/></div>{subTab==="contas"?<AccountsList data={data} setData={setData}/>:subTab==="bills"?<Bills data={data} setData={setData}/>:<FixedAccounts data={data} setData={setData}/>}</div>;
 }
 
 function AccountsList({ data, setData }) {
-  const fin = useFinance(data);
-  const toast = useToast();
-  const [modal, setModal] = useState(false);
-  const [form, setForm] = useState(emptyAccount());
-  const [errors, setErrors] = useState({});
-  const [confirmId, setConfirmId] = useState(null);
-
-  const openNew = () => { setForm(emptyAccount()); setErrors({}); setModal(true); };
-  const openEdit = (a) => { setForm({ ...a, initialBalance: (a.initialBalanceCents / 100).toFixed(2).replace(".", ",") }); setErrors({}); setModal(true); };
-
-  const validate = () => {
-    const e = {};
-    if (!form.name.trim()) e.name = "Nome obrigatório";
-    setErrors(e);
-    return Object.keys(e).length === 0;
-  };
-
-  const save = () => {
-    if (!validate()) return;
-    const initialBalanceCents = toCents(form.initialBalance || "0");
-    if (form.id) {
-      setData((d) => ({ ...d, accounts: d.accounts.map((a) => a.id === form.id ? { ...a, name: form.name.trim(), institution: form.institution, initialBalanceCents, type: form.type, color: form.color } : a) }));
-      toast("Conta atualizada.");
-    } else {
-      setData((d) => ({ ...d, accounts: [...d.accounts, { id: uid(), name: form.name.trim(), institution: form.institution, initialBalanceCents, type: form.type, color: form.color }] }));
-      toast("Conta adicionada.");
-    }
-    setModal(false);
-  };
-
-  const remove = (id) => {
-    setData((d) => ({ ...d, accounts: d.accounts.filter((a) => a.id !== id) }));
-    toast("Conta removida.");
-    setConfirmId(null);
-  };
-
-  return (
-    <div className="mf-anim-in">
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
-        <button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={15} /> Nova conta</button>
-      </div>
-      {data.accounts.length === 0 ? (
-        <EmptyState icon={Landmark} title="Nenhuma conta cadastrada" description="Cadastre suas contas bancárias, carteiras e dinheiro em espécie." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14} /> Nova conta</button>} />
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 }}>
-          {data.accounts.map((a) => (
-            <div key={a.id} className="mf-card" style={{ padding: 18 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ width: 34, height: 34, borderRadius: 9, background: a.color }} />
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{a.name}</div>
-                    <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>{a.institution || "—"}</div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <IconBtn onClick={() => openEdit(a)}><Pencil size={13} /></IconBtn>
-                  <IconBtn onClick={() => setConfirmId(a.id)} danger><Trash2 size={13} /></IconBtn>
-                </div>
-              </div>
-              <div className="mf-label" style={{ margin: 0 }}>Saldo atual</div>
-              <Money cents={fin.accountBalance(a.id)} size={22} weight={700} />
-            </div>
-          ))}
-        </div>
-      )}
-
-      <Modal open={modal} onClose={() => setModal(false)} title={form.id ? "Editar conta" : "Nova conta"} footer={<>
-        <button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setModal(false)}>Cancelar</button>
-        <button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button>
-      </>}>
-        <Field label="Nome"><input className="mf-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Ex: Nubank" />{errors.name && <ErrorText>{errors.name}</ErrorText>}</Field>
-        <Field label="Instituição"><input className="mf-input" value={form.institution} onChange={(e) => setForm((f) => ({ ...f, institution: e.target.value }))} placeholder="Ex: Nu Pagamentos" /></Field>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Saldo inicial (R$)"><input className="mf-input" inputMode="decimal" value={form.initialBalance} onChange={(e) => setForm((f) => ({ ...f, initialBalance: e.target.value }))} placeholder="0,00" /></Field>
-          <Field label="Tipo">
-            <select className="mf-input" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}>
-              <option value="corrente">Conta corrente</option>
-              <option value="poupanca">Poupança</option>
-              <option value="carteira">Carteira</option>
-              <option value="dinheiro">Dinheiro</option>
-            </select>
-          </Field>
-        </div>
-        <Field label="Cor">
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {ACCOUNT_COLORS.map((c) => (
-              <button key={c} className="mf-focus" onClick={() => setForm((f) => ({ ...f, color: c }))} style={{
-                width: 28, height: 28, borderRadius: "50%", background: c, border: form.color === c ? "3px solid var(--text)" : "2px solid transparent", cursor: "pointer"
-              }} />
-            ))}
-          </div>
-        </Field>
-      </Modal>
-      <ConfirmDialog open={!!confirmId} title="Excluir conta" message={`Excluir "${data.accounts.find((a) => a.id === confirmId)?.name || ""}"? As transações vinculadas continuarão registradas.`} onCancel={() => setConfirmId(null)} onConfirm={() => remove(confirmId)} />
-    </div>
-  );
+  const fin=useFinance(data), toast=useToast(); const [modal,setModal]=useState(false),[form,setForm]=useState(emptyAccount()),[errors,setErrors]=useState({}),[confirmId,setConfirmId]=useState(null);
+  const openNew=()=>{setForm(emptyAccount());setErrors({});setModal(true)}; const openEdit=a=>{setForm({id:a.id,name:a.name,institution:a.institution||"",type:a.type||"corrente",color:a.color||ACCOUNT_COLORS[0]});setErrors({});setModal(true)};
+  const save=()=>{const e={};if(!safeString(form.name).trim())e.name="Nome obrigatório";setErrors(e);if(Object.keys(e).length)return;setData(d=>({...d,accounts:form.id?d.accounts.map(a=>a.id===form.id?{...a,name:form.name.trim(),institution:form.institution,type:form.type,color:form.color}:a):[...d.accounts,{id:uid(),name:form.name.trim(),institution:form.institution,type:form.type,color:form.color}]}));toast(form.id?"Conta atualizada.":"Conta adicionada.");setModal(false)};
+  const remove=id=>{setData(d=>({...d,accounts:d.accounts.filter(a=>a.id!==id)}));toast("Conta removida.");setConfirmId(null)};
+  return <div><div style={{display:"flex",justifyContent:"flex-end",marginBottom:16}}><button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={15}/> Nova conta</button></div>{data.accounts.length===0?<EmptyState icon={Landmark} title="Nenhuma conta cadastrada" description="Cadastre suas contas bancárias, carteiras e dinheiro em espécie." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14}/> Nova conta</button>}/>:<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:14}}>{data.accounts.map(a=><div key={a.id} className="mf-card" style={{padding:18}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:34,height:34,borderRadius:9,background:a.color}}/><div><div style={{fontWeight:700,fontSize:14.5}}>{a.name}</div><div style={{fontSize:11.5,color:"var(--text-faint)"}}>{a.institution||"—"}</div></div></div><div style={{display:"flex",gap:4}}><IconBtn onClick={()=>openEdit(a)}><Pencil size={13}/></IconBtn><IconBtn onClick={()=>setConfirmId(a.id)} danger><Trash2 size={13}/></IconBtn></div></div><div className="mf-label" style={{margin:0}}>Saldo atual</div><Money cents={fin.accountBalance(a.id)} size={22} weight={700}/></div>)}</div>}
+  <Modal open={modal} onClose={()=>setModal(false)} title={form.id?"Editar conta":"Nova conta"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button></>}><Field label="Nome"><input className="mf-input" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/>{errors.name&&<ErrorText>{errors.name}</ErrorText>}</Field><Field label="Instituição"><input className="mf-input" value={form.institution} onChange={e=>setForm(f=>({...f,institution:e.target.value}))}/></Field><Field label="Tipo"><select className="mf-input" value={form.type} onChange={e=>setForm(f=>({...f,type:e.target.value}))}><option value="corrente">Conta corrente</option><option value="poupanca">Poupança</option><option value="carteira">Carteira</option><option value="dinheiro">Dinheiro</option></select></Field><Field label="Cor"><div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{ACCOUNT_COLORS.map(c=><button key={c} className="mf-focus" onClick={()=>setForm(f=>({...f,color:c}))} style={{width:28,height:28,borderRadius:"50%",background:c,border:form.color===c?"3px solid var(--text)":"2px solid transparent",cursor:"pointer"}}/>)}</div></Field></Modal><ConfirmDialog open={!!confirmId} title="Excluir conta" message={`Excluir "${data.accounts.find(a=>a.id===confirmId)?.name||""}"? As movimentações continuarão registradas.`} onCancel={()=>setConfirmId(null)} onConfirm={()=>remove(confirmId)}/></div>;
 }
 
-/* =========================================================================
-   CONTAS A PAGAR (Bills)
-   ========================================================================= */
-
-function emptyBill() { return { id: null, name: "", value: "", dueDate: isoToday(), categoryId: "", accountId: "", recurrence: "none" }; }
+function emptyBill() {
+  return { id: null, name: "", value: "", dueDate: isoToday(), categoryId: "", accountId: "" };
+}
 
 function Bills({ data, setData }) {
   const toast = useToast();
@@ -1325,422 +1325,249 @@ function Bills({ data, setData }) {
   const [form, setForm] = useState(emptyBill());
   const [errors, setErrors] = useState({});
   const [confirmId, setConfirmId] = useState(null);
-  const [payId, setPayId] = useState(null);
-  const [payAccount, setPayAccount] = useState("");
   const [filter, setFilter] = useState("pending");
+  const currentMonth = monthKeyOf(isoToday());
 
   const openNew = () => { setForm(emptyBill()); setErrors({}); setModal(true); };
-  const openEdit = (b) => { setForm({ ...b, value: (b.valueCents / 100).toFixed(2).replace(".", ",") }); setErrors({}); setModal(true); };
+  const openEdit = (b) => { setForm({ ...b, value: (safeCents(b.valueCents) / 100).toFixed(2).replace(".", ",") }); setErrors({}); setModal(true); };
 
   const save = () => {
     const e = {};
-    if (!form.name.trim()) e.name = "Nome obrigatório";
+    if (!safeString(form.name).trim()) e.name = "Nome obrigatório";
     if (toCents(form.value) <= 0) e.value = "Valor deve ser maior que zero";
     if (!form.dueDate) e.dueDate = "Vencimento obrigatório";
     if (!form.categoryId) e.categoryId = "Selecione a categoria";
-    if (!form.accountId) e.accountId = "Selecione a conta";
+    if (!form.accountId) e.accountId = "Selecione uma conta";
     setErrors(e);
     if (Object.keys(e).length) return;
+
     const valueCents = toCents(form.value);
-    if (form.id) {
-      setData((d) => ({ ...d, bills: d.bills.map((b) => b.id === form.id ? { ...b, name: form.name.trim(), valueCents, dueDate: form.dueDate, categoryId: form.categoryId, accountId: form.accountId, recurrence: form.recurrence } : b) }));
-      toast("Conta atualizada.");
-    } else {
-      setData((d) => ({ ...d, bills: [...d.bills, { id: uid(), name: form.name.trim(), valueCents, dueDate: form.dueDate, categoryId: form.categoryId, accountId: form.accountId, status: "pending", recurrence: form.recurrence, paidTransactionId: null }] }));
-      toast("Conta adicionada.");
-    }
+    setData((d) => ({
+      ...d,
+      bills: form.id
+        ? d.bills.map((b) => b.id === form.id ? { ...b, name: form.name.trim(), valueCents, dueDate: form.dueDate, categoryId: form.categoryId, accountId: form.accountId } : b)
+        : [...d.bills, {
+            id: uid(), name: form.name.trim(), valueCents, dueDate: form.dueDate,
+            categoryId: form.categoryId, accountId: form.accountId, status: "pending",
+            fixed: false, recurrence: "none", fixedAccountId: null, occurrenceKey: null,
+            paidDate: null, paymentId: null, paymentAccountId: form.accountId,
+          }],
+    }));
+    toast(form.id ? "Conta atualizada." : "Conta adicionada.");
     setModal(false);
   };
 
-  const remove = (id) => { setData((d) => ({ ...d, bills: d.bills.filter((b) => b.id !== id) })); toast("Conta removida."); setConfirmId(null); };
-
-  const openPay = (b) => { setPayId(b.id); setPayAccount(b.accountId || data.accounts[0]?.id || ""); };
-
-  const confirmPay = () => {
-    const bill = data.bills.find((b) => b.id === payId);
-    if (!bill || bill.status === "paid") return;
-    const txId = uid();
-    setData((d) => {
-      let bills = d.bills.map((b) => b.id === payId ? { ...b, status: "paid", paidTransactionId: txId, accountId: payAccount } : b);
-      if (bill.recurrence !== "none") {
-        const nextDue = bill.recurrence === "monthly" ? addMonthsISO(bill.dueDate, 1) : addMonthsISO(bill.dueDate, 12);
-        bills = [...bills, { id: uid(), name: bill.name, valueCents: bill.valueCents, dueDate: nextDue, categoryId: bill.categoryId, accountId: bill.accountId, status: "pending", recurrence: bill.recurrence, paidTransactionId: null }];
-      }
-      return {
-        ...d, bills,
-        transactions: [...d.transactions, { id: txId, description: bill.name, valueCents: bill.valueCents, type: "expense", categoryId: bill.categoryId, accountId: payAccount, date: isoToday(), status: "paid", note: "", transfer: false }]
-      };
-    });
-    toast("Conta marcada como paga.");
-    setPayId(null);
+  const remove = (id) => {
+    setData((d) => ({ ...d, bills: d.bills.filter((b) => b.id !== id) }));
+    toast("Conta removida.");
+    setConfirmId(null);
   };
 
-  const list = data.bills.filter((b) => filter === "all" ? true : b.status === filter).sort((a, b) => a.dueDate < b.dueDate ? -1 : 1);
+  const togglePayment = (id) => {
+    setData((d) => {
+      const bill = d.bills.find((b) => b.id === id);
+      if (!bill) return d;
+      if (bill.status === "paid") {
+        return { ...d, bills: d.bills.map((b) => b.id === id ? { ...b, status: "pending", paidDate: null, paymentId: null } : b) };
+      }
+      return {
+        ...d,
+        bills: d.bills.map((b) => b.id === id ? {
+          ...b, status: "paid", paidDate: isoToday(), paymentId: b.paymentId || uid(), paymentAccountId: b.paymentAccountId || b.accountId || "",
+        } : b),
+      };
+    });
+    toast("Status da conta atualizado.");
+  };
+
+  const list = useMemo(() => [...data.bills]
+    .filter((b) => monthKeyOf(b.dueDate) === currentMonth)
+    .filter((b) => filter === "all" || b.status === filter)
+    .sort((a, b) => a.dueDate < b.dueDate ? -1 : 1), [data.bills, currentMonth, filter]);
 
   return (
-    <div>
+    <div className="mf-anim-in">
       <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
         <SegTabs value={filter} onChange={setFilter} options={[{ value: "pending", label: "Pendentes" }, { value: "paid", label: "Pagas" }, { value: "all", label: "Todas" }]} />
         <button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={15} /> Nova conta a pagar</button>
       </div>
 
-      {list.length === 0 ? (
-        <EmptyState icon={Landmark} title="Nenhuma conta encontrada" description="Cadastre aluguel, internet, assinaturas e outras contas recorrentes." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14} /> Nova conta a pagar</button>} />
-      ) : (
+      {list.length === 0 ? <EmptyState icon={Landmark} title="Nenhuma conta encontrada" description="Cadastre contas a pagar e gerencie os pagamentos." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14} /> Nova conta a pagar</button>} /> :
         <div className="mf-card" style={{ overflow: "hidden" }}>
           {list.map((b, idx) => {
             const cat = data.categories.find((c) => c.id === b.categoryId);
             const acc = data.accounts.find((a) => a.id === b.accountId);
-            return (
-              <div key={b.id} className={b.status === "paid" ? "mf-bill-paid" : ""} style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px", borderTop: idx === 0 ? "none" : "1px solid var(--border)", flexWrap: "wrap" }}>
-                <IconBadge icon={cat?.icon || "💰"} color={cat?.color || "#888"} />
-                <div style={{ flex: 1, minWidth: 140 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13.5, display: "flex", alignItems: "center", gap: 6, color: b.status === "paid" ? "var(--text-muted)" : "var(--text)" }}>
-                    {b.name}
-                    {b.status === "paid" && <Badge color="var(--income)">✓ paga</Badge>}
-                    {b.recurrence !== "none" && <Badge color="var(--text-faint)">{b.recurrence === "monthly" ? "mensal" : "anual"}</Badge>}
-                  </div>
-                  <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>vence {fmtDateBR(b.dueDate)} · {cat?.name} · {acc?.name}</div>
+            return <div key={b.id} className={b.status === "paid" ? "mf-bill-paid" : ""} style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px", borderTop: idx === 0 ? "none" : "1px solid var(--border)", flexWrap: "wrap" }}>
+              <IconBadge icon={cat?.icon || "💰"} color={cat?.color || "#888"} />
+              <div style={{ flex: 1, minWidth: 140 }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {b.name}
+                  {b.fixed && <Badge color="var(--text-faint)">fixa</Badge>}
+                  {b.status === "paid" && <Badge color="var(--income)">✓ paga</Badge>}
                 </div>
-                <Money cents={b.valueCents} weight={700} />
-                {b.status === "pending" ? <button className="mf-btn mf-btn-primary mf-focus" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => openPay(b)}>Marcar como paga</button> : <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, background: "color-mix(in srgb, var(--income) 16%, var(--surface))", border: "1px solid color-mix(in srgb, var(--income) 45%, var(--border))", color: "var(--income)", fontSize: 12.5, fontWeight: 700 }}><Check size={14} /> Paga</span>}
-                <div style={{ display: "flex", gap: 4 }}>
-                  <IconBtn onClick={() => openEdit(b)}><Pencil size={13} /></IconBtn>
-                  <IconBtn onClick={() => setConfirmId(b.id)} danger><Trash2 size={13} /></IconBtn>
-                </div>
+                <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>vence {fmtDateBR(b.dueDate)} · {cat?.name || "—"} · {acc?.name || "—"}</div>
               </div>
-            );
+              <Money cents={b.valueCents} weight={700} />
+              {b.status === "pending"
+                ? <button className="mf-btn mf-btn-primary mf-focus" style={{ padding: "6px 11px", fontSize: 12 }} onClick={() => togglePayment(b.id)}>Marcar como paga</button>
+                : <button className="mf-btn mf-btn-ghost mf-focus" style={{ padding: "6px 11px", fontSize: 12 }} onClick={() => togglePayment(b.id)}>Marcar como pendente</button>}
+              <IconBtn onClick={() => openEdit(b)}><Pencil size={13} /></IconBtn>
+              <IconBtn onClick={() => setConfirmId(b.id)} danger><Trash2 size={13} /></IconBtn>
+            </div>;
           })}
-        </div>
-      )}
+        </div>}
 
-      <Modal open={modal} onClose={() => setModal(false)} title={form.id ? "Editar conta" : "Nova conta a pagar"} footer={<>
-        <button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setModal(false)}>Cancelar</button>
-        <button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button>
-      </>}>
-        <Field label="Nome"><input className="mf-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Ex: Aluguel" />{errors.name && <ErrorText>{errors.name}</ErrorText>}</Field>
+      <Modal open={modal} onClose={() => setModal(false)} title={form.id ? "Editar conta" : "Nova conta a pagar"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button></>}>
+        <Field label="Nome"><input className="mf-input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Ex: Aluguel" />{errors.name && <ErrorText>{errors.name}</ErrorText>}</Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Valor (R$)"><input className="mf-input" inputMode="decimal" value={form.value} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} />{errors.value && <ErrorText>{errors.value}</ErrorText>}</Field>
-          <Field label="Vencimento"><input className="mf-input" type="date" value={form.dueDate} onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value }))} />{errors.dueDate && <ErrorText>{errors.dueDate}</ErrorText>}</Field>
+          <Field label="Valor (R$)"><input className="mf-input" inputMode="decimal" value={form.value} onChange={e => setForm(f => ({ ...f, value: e.target.value }))} placeholder="0,00" />{errors.value && <ErrorText>{errors.value}</ErrorText>}</Field>
+          <Field label="Vencimento"><input className="mf-input" type="date" value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} />{errors.dueDate && <ErrorText>{errors.dueDate}</ErrorText>}</Field>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Categoria">
-            <select className="mf-input" value={form.categoryId} onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value }))}>
-              <option value="">Selecione…</option>
-              {data.categories.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
-            </select>
-            {errors.categoryId && <ErrorText>{errors.categoryId}</ErrorText>}
-          </Field>
-          <Field label="Conta para pagamento">
-            <select className="mf-input" value={form.accountId} onChange={(e) => setForm((f) => ({ ...f, accountId: e.target.value }))}>
-              <option value="">Selecione…</option>
-              {data.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
-            {errors.accountId && <ErrorText>{errors.accountId}</ErrorText>}
-          </Field>
+          <Field label="Categoria"><select className="mf-input" value={form.categoryId} onChange={e => setForm(f => ({ ...f, categoryId: e.target.value }))}><option value="">Selecione…</option>{data.categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}</select>{errors.categoryId && <ErrorText>{errors.categoryId}</ErrorText>}</Field>
+          <Field label="Conta"><select className="mf-input" value={form.accountId} onChange={e => setForm(f => ({ ...f, accountId: e.target.value }))}><option value="">Selecione…</option>{data.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>{errors.accountId && <ErrorText>{errors.accountId}</ErrorText>}</Field>
         </div>
-        <Field label="Recorrência">
-          <SegTabs value={form.recurrence} onChange={(v) => setForm((f) => ({ ...f, recurrence: v }))} options={[{ value: "none", label: "Nenhuma" }, { value: "monthly", label: "Mensal" }, { value: "yearly", label: "Anual" }]} />
-        </Field>
       </Modal>
-
-      <Modal open={!!payId} onClose={() => setPayId(null)} title="Marcar conta como paga" footer={<>
-        <button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setPayId(null)}>Cancelar</button>
-        <button className="mf-btn mf-btn-primary mf-focus" onClick={confirmPay}>Confirmar pagamento</button>
-      </>}>
-        {payId && (() => { const b = data.bills.find((x) => x.id === payId); return (
-          <>
-            <p style={{ fontSize: 14 }}>Confirmar pagamento de <b>{b.name}</b>: <Money cents={b.valueCents} weight={700} /></p>
-            <Field label="Pagar com a conta">
-              <select className="mf-input" value={payAccount} onChange={(e) => setPayAccount(e.target.value)}>
-                {data.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-            </Field>
-            {b.recurrence !== "none" && <p style={{ fontSize: 12, color: "var(--text-faint)" }}>A próxima ocorrência ({b.recurrence === "monthly" ? "mensal" : "anual"}) será gerada automaticamente.</p>}
-          </>
-        ); })()}
-      </Modal>
-
-      <ConfirmDialog open={!!confirmId} title="Excluir conta a pagar" message={`Excluir "${data.bills.find((b) => b.id === confirmId)?.name || ""}"?`} onCancel={() => setConfirmId(null)} onConfirm={() => remove(confirmId)} />
+      <ConfirmDialog open={!!confirmId} title="Excluir conta" message={`Excluir "${data.bills.find(b => b.id === confirmId)?.name || ""}"?`} onCancel={() => setConfirmId(null)} onConfirm={() => remove(confirmId)} />
     </div>
   );
 }
 
-/* =========================================================================
-   CARTÕES, COMPRAS E FATURAS
-   ========================================================================= */
-
-function invoiceMonthFor(purchaseDateISO, closingDay, offset) {
-  const d = parseISO(purchaseDateISO);
-  let base = new Date(d.getFullYear(), d.getMonth(), 1);
-  if (d.getDate() > closingDay) base = new Date(base.getFullYear(), base.getMonth() + 1, 1);
-  const target = new Date(base.getFullYear(), base.getMonth() + offset, 1);
-  return target.getFullYear() + "-" + String(target.getMonth() + 1).padStart(2, "0");
-}
-
-function computeInvoices(card, purchases) {
-  // Map monthKey -> { total, items: [{purchase, installmentIndex}] }
-  const map = {};
-  for (const p of purchases.filter((p) => p.cardId === card.id)) {
-    for (let k = 0; k < p.installments; k++) {
-      const mk = invoiceMonthFor(p.date, card.closingDay, k);
-      if (!map[mk]) map[mk] = { total: 0, items: [] };
-      map[mk].total += p.installmentValueCents;
-      map[mk].items.push({ purchase: p, n: k + 1 });
-    }
-  }
-  return map;
-}
-
-function emptyCard() { return { id: null, name: "", institution: "", limit: "", closingDay: 10, dueDay: 17, color: ACCOUNT_COLORS[0], active: true }; }
-function emptyPurchase() { return { id: null, description: "", value: "", cardId: "", categoryId: "", date: isoToday(), installments: 1, note: "" }; }
-
-function Cards({ data, setData }) {
+function FixedAccounts({ data, setData }) {
   const toast = useToast();
-  const [cardModal, setCardModal] = useState(false);
-  const [cardForm, setCardForm] = useState(emptyCard());
-  const [cardErrors, setCardErrors] = useState({});
-  const [confirmCardId, setConfirmCardId] = useState(null);
+  const [modal, setModal] = useState(false);
+  const [form, setForm] = useState({ id: null, name: "", value: "", dueDay: 1, categoryId: "", accountId: "", recurrence: "monthly", startDate: isoToday(), active: true });
+  const [errors, setErrors] = useState({});
+  const [confirmId, setConfirmId] = useState(null);
+  const month = getActiveMonth(data);
 
-  const [purchaseModal, setPurchaseModal] = useState(false);
-  const [purchaseForm, setPurchaseForm] = useState(emptyPurchase());
-  const [purchaseErrors, setPurchaseErrors] = useState({});
-  const [confirmPurchaseId, setConfirmPurchaseId] = useState(null);
+  const openNew = () => {
+    setForm({ id: null, name: "", value: "", dueDay: new Date().getDate(), categoryId: data.categories[0]?.id || "", accountId: data.accounts[0]?.id || "", recurrence: "monthly", startDate: isoToday(), active: true });
+    setErrors({}); setModal(true);
+  };
 
-  const [expandedCard, setExpandedCard] = useState(data.cards[0]?.id || null);
-  const [payModal, setPayModal] = useState(null); // {cardId, monthKey, total}
-  const [payAccount, setPayAccount] = useState("");
+  const openEdit = (f) => {
+    setForm({ ...f, value: (safeCents(f.valueCents) / 100).toFixed(2).replace(".", ",") });
+    setErrors({}); setModal(true);
+  };
 
-  const openNewCard = () => { setCardForm(emptyCard()); setCardErrors({}); setCardModal(true); };
-  const openEditCard = (c) => { setCardForm({ ...c, limit: (c.limitCents / 100).toFixed(2).replace(".", ",") }); setCardErrors({}); setCardModal(true); };
-
-  const saveCard = () => {
+  const save = () => {
     const e = {};
-    if (!cardForm.name.trim()) e.name = "Nome obrigatório";
-    if (cardForm.closingDay < 1 || cardForm.closingDay > 31) e.closingDay = "Dia inválido";
-    if (cardForm.dueDay < 1 || cardForm.dueDay > 31) e.dueDay = "Dia inválido";
-    setCardErrors(e);
-    if (Object.keys(e).length) return;
-    const limitCents = toCents(cardForm.limit || "0");
-    if (cardForm.id) {
-      setData((d) => ({ ...d, cards: d.cards.map((c) => c.id === cardForm.id ? { ...c, name: cardForm.name.trim(), institution: cardForm.institution, limitCents, closingDay: +cardForm.closingDay, dueDay: +cardForm.dueDay, color: cardForm.color, active: cardForm.active } : c) }));
-      toast("Cartão atualizado.");
-    } else {
-      const nc = { id: uid(), name: cardForm.name.trim(), institution: cardForm.institution, limitCents, closingDay: +cardForm.closingDay, dueDay: +cardForm.dueDay, color: cardForm.color, active: true };
-      setData((d) => ({ ...d, cards: [...d.cards, nc] }));
-      setExpandedCard(nc.id);
-      toast("Cartão adicionado.");
-    }
-    setCardModal(false);
-  };
-  const removeCard = (id) => {
-    setData((d) => ({ ...d, cards: d.cards.filter((c) => c.id !== id), cardPurchases: d.cardPurchases.filter((p) => p.cardId !== id) }));
-    toast("Cartão removido.");
-    setConfirmCardId(null);
+    if (!safeString(form.name).trim()) e.name = "Nome obrigatório";
+    if (toCents(form.value) <= 0) e.value = "Valor inválido";
+    if (+form.dueDay < 1 || +form.dueDay > 31) e.dueDay = "Dia inválido";
+    if (!form.categoryId) e.categoryId = "Selecione a categoria";
+    if (!form.accountId) e.accountId = "Selecione uma conta";
+    setErrors(e); if (Object.keys(e).length) return;
+
+    const f = {
+      id: form.id || uid(), name: form.name.trim(), valueCents: toCents(form.value), dueDay: +form.dueDay,
+      categoryId: form.categoryId, accountId: form.accountId, recurrence: form.recurrence,
+      startDate: form.startDate || isoToday(), active: form.active !== false,
+    };
+
+    setData((d) => {
+      const fixed = form.id ? (d.fixedAccounts || []).map(x => x.id === form.id ? f : x) : [...(d.fixedAccounts || []), f];
+      return ensureFixedOccurrences({ ...d, fixedAccounts: fixed }, month);
+    });
+    toast(form.id ? "Conta fixa atualizada." : "Conta fixa criada.");
+    setModal(false);
   };
 
-  const openNewPurchase = (cardId) => { setPurchaseForm({ ...emptyPurchase(), cardId }); setPurchaseErrors({}); setPurchaseModal(true); };
-  const openEditPurchase = (p) => { setPurchaseForm({ ...p, value: (p.valueCents / 100).toFixed(2).replace(".", ",") }); setPurchaseErrors({}); setPurchaseModal(true); };
-
-  const savePurchase = () => {
-    const e = {};
-    if (!purchaseForm.description.trim()) e.description = "Descrição obrigatória";
-    if (toCents(purchaseForm.value) <= 0) e.value = "Valor inválido";
-    if (!purchaseForm.categoryId) e.categoryId = "Selecione a categoria";
-    if (!purchaseForm.installments || purchaseForm.installments < 1) e.installments = "Mínimo 1 parcela";
-    setPurchaseErrors(e);
-    if (Object.keys(e).length) return;
-    const valueCents = toCents(purchaseForm.value);
-    const installments = Math.max(1, parseInt(purchaseForm.installments) || 1);
-    const installmentValueCents = Math.round(valueCents / installments);
-    if (purchaseForm.id) {
-      setData((d) => ({ ...d, cardPurchases: d.cardPurchases.map((p) => p.id === purchaseForm.id ? { ...p, description: purchaseForm.description.trim(), valueCents, categoryId: purchaseForm.categoryId, date: purchaseForm.date, installments, installmentValueCents, note: purchaseForm.note } : p) }));
-      toast("Compra atualizada.");
-    } else {
-      setData((d) => ({ ...d, cardPurchases: [...d.cardPurchases, { id: uid(), description: purchaseForm.description.trim(), valueCents, cardId: purchaseForm.cardId, categoryId: purchaseForm.categoryId, date: purchaseForm.date, installments, installmentValueCents, note: purchaseForm.note }] }));
-      toast("Compra registrada.");
-    }
-    setPurchaseModal(false);
-  };
-  const removePurchase = (id) => {
-    setData((d) => ({ ...d, cardPurchases: d.cardPurchases.filter((p) => p.id !== id) }));
-    toast("Compra removida.");
-    setConfirmPurchaseId(null);
+  const toggleActive = (f) => {
+    setData((d) => ({ ...d, fixedAccounts: (d.fixedAccounts || []).map(x => x.id === f.id ? { ...x, active: !x.active } : x) }));
+    toast(f.active ? "Recorrência pausada." : "Recorrência ativada.");
   };
 
-  const payInvoice = () => {
-    if (!payAccount) return;
-    const key = `${payModal.cardId}-${payModal.monthKey}`;
-    const card = data.cards.find((c) => c.id === payModal.cardId);
-    const txId = uid();
-    setData((d) => ({
-      ...d,
-      transactions: [...d.transactions, { id: txId, description: `Fatura ${card.name} — ${monthLabel(payModal.monthKey)}`, valueCents: payModal.total, type: "expense", categoryId: "cat-cartao", accountId: payAccount, date: isoToday(), status: "paid", note: "", transfer: false }],
-      invoicePayments: { ...d.invoicePayments, [key]: { transactionId: txId, paidDate: isoToday() } }
-    }));
-    toast("Fatura paga.");
-    setPayModal(null);
+  const toggleOccurrence = (fixedId) => {
+    setData((d) => {
+      const occurrence = d.bills.find(b => b.fixedAccountId === fixedId && b.occurrenceKey === occurrenceKey(fixedId, month));
+      if (!occurrence) return ensureFixedOccurrences(d, month);
+      if (occurrence.status === "paid") {
+        return { ...d, bills: d.bills.map(b => b.id === occurrence.id ? { ...b, status: "pending", paidDate: null, paymentId: null } : b) };
+      }
+      return { ...d, bills: d.bills.map(b => b.id === occurrence.id ? { ...b, status: "paid", paidDate: isoToday(), paymentId: b.paymentId || uid(), paymentAccountId: b.paymentAccountId || b.accountId || "" } : b) };
+    });
+    toast("Status da ocorrência atualizado.");
   };
 
-  return (
-    <div className="mf-anim-in">
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
-        <button className="mf-btn mf-btn-primary mf-focus" onClick={openNewCard}><Plus size={15} /> Novo cartão</button>
+  const remove = (id) => {
+    setData(d => ({ ...d, fixedAccounts: (d.fixedAccounts || []).filter(f => f.id !== id) }));
+    toast("Conta fixa removida. Ocorrências já criadas continuam no histórico.");
+    setConfirmId(null);
+  };
+
+  const rows = data.fixedAccounts || [];
+
+  return <div className="mf-anim-in">
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+      <div>
+        <div className="mf-display" style={{ fontSize: 15.5, fontWeight: 600 }}>Modelos recorrentes</div>
+        <div style={{ fontSize: 12, color: "var(--text-faint)" }}>O modelo é a recorrência. O pagamento pertence à ocorrência do mês.</div>
       </div>
-
-      {data.cards.length === 0 ? (
-        <EmptyState icon={CreditCard} title="Nenhum cartão cadastrado" description="Adicione seus cartões de crédito para acompanhar faturas e compras." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNewCard}><Plus size={14} /> Novo cartão</button>} />
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {data.cards.map((card) => {
-            const purchases = data.cardPurchases.filter((p) => p.cardId === card.id);
-            const invoices = computeInvoices(card, data.cardPurchases);
-            const usedCents = purchases.reduce((s, p) => s + p.valueCents, 0); // outstanding approximation (simplified: total not-yet-fully-paid)
-            const sortedMonths = Object.keys(invoices).sort();
-            const currentMonthKey = monthKeyOf(isoToday());
-            const relevantMonths = sortedMonths.filter((mk) => mk >= currentMonthKey).slice(0, 4);
-            const isOpen = expandedCard === card.id;
-            return (
-              <div key={card.id} className="mf-card" style={{ padding: 18 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, cursor: "pointer", flexWrap: "wrap" }} onClick={() => setExpandedCard(isOpen ? null : card.id)}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div style={{ width: 42, height: 28, borderRadius: 6, background: `linear-gradient(135deg, ${card.color}, ${card.color}99)` }} />
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 15 }}>{card.name}</div>
-                      <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>{card.institution} · fecha dia {card.closingDay} · vence dia {card.dueDay}</div>
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 11, color: "var(--text-faint)" }}>Limite disponível</div>
-                      <Money cents={Math.max(0, card.limitCents - usedCents)} weight={700} />
-                    </div>
-                    <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 4 }}>
-                      <IconBtn onClick={() => openEditCard(card)}><Pencil size={13} /></IconBtn>
-                      <IconBtn onClick={() => setConfirmCardId(card.id)} danger><Trash2 size={13} /></IconBtn>
-                    </div>
-                    {isOpen ? <ChevronLeft style={{ transform: "rotate(-90deg)" }} size={16} /> : <ChevronRight size={16} />}
-                  </div>
-                </div>
-
-                {isOpen && (
-                  <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
-                    <SectionTitle title="Faturas" action={<LinkBtn onClick={(e) => { openNewPurchase(card.id); }}>+ Nova compra</LinkBtn>} />
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px,1fr))", gap: 10, marginBottom: 18 }}>
-                      {relevantMonths.length === 0 && <div style={{ color: "var(--text-faint)", fontSize: 13 }}>Sem faturas futuras.</div>}
-                      {relevantMonths.map((mk, i) => {
-                        const inv = invoices[mk];
-                        const key = `${card.id}-${mk}`;
-                        const paid = data.invoicePayments?.[key];
-                        return (
-                          <div key={mk} className="mf-card" style={{ padding: 14, background: "var(--surface-2)" }}>
-                            <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 4 }}>{i === 0 ? "Fatura atual" : monthLabel(mk)}</div>
-                            <Money cents={inv.total} size={17} weight={700} />
-                            <div style={{ fontSize: 11, color: "var(--text-faint)", margin: "6px 0 10px" }}>{monthLabel(mk)}</div>
-                            {paid ? (
-                              <Badge color="var(--income)">Paga</Badge>
-                            ) : (
-                              <button className="mf-btn mf-btn-ghost mf-focus" style={{ width: "100%", padding: "6px 10px", fontSize: 12 }} onClick={() => { setPayModal({ cardId: card.id, monthKey: mk, total: inv.total }); setPayAccount(data.accounts[0]?.id || ""); }}>Pagar fatura</button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <SectionTitle title="Compras no cartão" />
-                    {purchases.length === 0 ? (
-                      <EmptyState icon={CreditCard} title="Nenhuma compra registrada" description="Registre as compras feitas neste cartão." />
-                    ) : (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        {purchases.slice().sort((a, b) => a.date < b.date ? 1 : -1).map((p) => {
-                          const cat = data.categories.find((c) => c.id === p.categoryId);
-                          return (
-                            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px solid var(--border)" }}>
-                              <IconBadge icon={cat?.icon || "💳"} color={cat?.color || "#888"} />
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontWeight: 600, fontSize: 13.5 }}>{p.description}</div>
-                                <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>{fmtDateBR(p.date)} · {p.installments}x de {brl(p.installmentValueCents)}</div>
-                              </div>
-                              <Money cents={p.valueCents} weight={700} />
-                              <div style={{ display: "flex", gap: 4 }}>
-                                <IconBtn onClick={() => openEditPurchase(p)}><Pencil size={13} /></IconBtn>
-                                <IconBtn onClick={() => setConfirmPurchaseId(p.id)} danger><Trash2 size={13} /></IconBtn>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <Modal open={cardModal} onClose={() => setCardModal(false)} title={cardForm.id ? "Editar cartão" : "Novo cartão"} footer={<>
-        <button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setCardModal(false)}>Cancelar</button>
-        <button className="mf-btn mf-btn-primary mf-focus" onClick={saveCard}>Salvar</button>
-      </>}>
-        <Field label="Nome"><input className="mf-input" value={cardForm.name} onChange={(e) => setCardForm((f) => ({ ...f, name: e.target.value }))} placeholder="Ex: Nubank" />{cardErrors.name && <ErrorText>{cardErrors.name}</ErrorText>}</Field>
-        <Field label="Instituição"><input className="mf-input" value={cardForm.institution} onChange={(e) => setCardForm((f) => ({ ...f, institution: e.target.value }))} /></Field>
-        <Field label="Limite (R$)"><input className="mf-input" inputMode="decimal" value={cardForm.limit} onChange={(e) => setCardForm((f) => ({ ...f, limit: e.target.value }))} placeholder="0,00" /></Field>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Dia de fechamento"><input className="mf-input" type="number" min={1} max={31} value={cardForm.closingDay} onChange={(e) => setCardForm((f) => ({ ...f, closingDay: e.target.value }))} />{cardErrors.closingDay && <ErrorText>{cardErrors.closingDay}</ErrorText>}</Field>
-          <Field label="Dia de vencimento"><input className="mf-input" type="number" min={1} max={31} value={cardForm.dueDay} onChange={(e) => setCardForm((f) => ({ ...f, dueDay: e.target.value }))} />{cardErrors.dueDay && <ErrorText>{cardErrors.dueDay}</ErrorText>}</Field>
-        </div>
-        <Field label="Cor">
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {ACCOUNT_COLORS.map((c) => <button key={c} className="mf-focus" onClick={() => setCardForm((f) => ({ ...f, color: c }))} style={{ width: 28, height: 28, borderRadius: "50%", background: c, border: cardForm.color === c ? "3px solid var(--text)" : "2px solid transparent", cursor: "pointer" }} />)}
-          </div>
-        </Field>
-      </Modal>
-
-      <Modal open={purchaseModal} onClose={() => setPurchaseModal(false)} title={purchaseForm.id ? "Editar compra" : "Nova compra"} footer={<>
-        <button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setPurchaseModal(false)}>Cancelar</button>
-        <button className="mf-btn mf-btn-primary mf-focus" onClick={savePurchase}>Salvar</button>
-      </>}>
-        <Field label="Descrição"><input className="mf-input" value={purchaseForm.description} onChange={(e) => setPurchaseForm((f) => ({ ...f, description: e.target.value }))} />{purchaseErrors.description && <ErrorText>{purchaseErrors.description}</ErrorText>}</Field>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Valor total (R$)"><input className="mf-input" inputMode="decimal" value={purchaseForm.value} onChange={(e) => setPurchaseForm((f) => ({ ...f, value: e.target.value }))} placeholder="0,00" />{purchaseErrors.value && <ErrorText>{purchaseErrors.value}</ErrorText>}</Field>
-          <Field label="Data"><input className="mf-input" type="date" value={purchaseForm.date} onChange={(e) => setPurchaseForm((f) => ({ ...f, date: e.target.value }))} /></Field>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Categoria">
-            <select className="mf-input" value={purchaseForm.categoryId} onChange={(e) => setPurchaseForm((f) => ({ ...f, categoryId: e.target.value }))}>
-              <option value="">Selecione…</option>
-              {data.categories.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
-            </select>
-            {purchaseErrors.categoryId && <ErrorText>{purchaseErrors.categoryId}</ErrorText>}
-          </Field>
-          <Field label="Parcelas"><input className="mf-input" type="number" min={1} value={purchaseForm.installments} onChange={(e) => setPurchaseForm((f) => ({ ...f, installments: e.target.value }))} />{purchaseErrors.installments && <ErrorText>{purchaseErrors.installments}</ErrorText>}</Field>
-        </div>
-        {purchaseForm.value && purchaseForm.installments > 0 && (
-          <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{purchaseForm.installments}x de <Money cents={Math.round(toCents(purchaseForm.value) / (purchaseForm.installments || 1))} size={13} /></div>
-        )}
-      </Modal>
-
-      <Modal open={!!payModal} onClose={() => setPayModal(null)} title="Pagar fatura" footer={<>
-        <button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setPayModal(null)}>Cancelar</button>
-        <button className="mf-btn mf-btn-primary mf-focus" onClick={payInvoice} disabled={!payAccount}>Confirmar pagamento</button>
-      </>}>
-        {payModal && (
-          <>
-            <p style={{ fontSize: 14 }}>Fatura de <b>{monthLabel(payModal.monthKey)}</b>: <Money cents={payModal.total} weight={700} /></p>
-            <Field label="Pagar com a conta">
-              <select className="mf-input" value={payAccount} onChange={(e) => setPayAccount(e.target.value)}>
-                {data.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-            </Field>
-          </>
-        )}
-      </Modal>
-
-      <ConfirmDialog open={!!confirmCardId} title="Excluir cartão" message="Excluir este cartão e todas as suas compras registradas?" onCancel={() => setConfirmCardId(null)} onConfirm={() => removeCard(confirmCardId)} />
-      <ConfirmDialog open={!!confirmPurchaseId} title="Excluir compra" message="Excluir esta compra do cartão?" onCancel={() => setConfirmPurchaseId(null)} onConfirm={() => removePurchase(confirmPurchaseId)} />
+      <button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={15} /> Nova conta fixa</button>
     </div>
-  );
+
+    {rows.length === 0 ? <EmptyState icon={Landmark} title="Nenhuma conta fixa" description="Cadastre modelos recorrentes como aluguel, internet e luz." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14} /> Nova conta fixa</button>} /> :
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {rows.map(f => {
+          const occ = data.bills.find(b => b.fixedAccountId === f.id && b.occurrenceKey === occurrenceKey(f.id, month));
+          const paid = occ?.status === "paid";
+          return <div key={f.id} className="mf-card" style={{ padding: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <IconBadge icon="🔁" color="var(--brand-2)" />
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                {f.name}
+                <Badge color={paid ? "var(--income)" : "var(--text-faint)"}>{paid ? "Paga" : "Pendente"}</Badge>
+                <Badge color={f.active ? "var(--brand-2)" : "var(--text-faint)"}>{f.active ? "Recorrência ativa" : "Recorrência pausada"}</Badge>
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 3 }}>R$ {(safeCents(f.valueCents) / 100).toFixed(2).replace(".", ",")} · todo dia {f.dueDay} · competência {monthLabel(month)}</div>
+            </div>
+            <Money cents={f.valueCents} weight={700} />
+            {f.active && <button className={`mf-btn ${paid ? "mf-btn-ghost" : "mf-btn-primary"} mf-focus`} style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => toggleOccurrence(f.id)}>{paid ? "Marcar como pendente" : "Marcar como paga"}</button>}
+            <button className="mf-btn mf-btn-ghost mf-focus" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => toggleActive(f)}>{f.active ? "Pausar recorrência" : "Ativar recorrência"}</button>
+            <IconBtn onClick={() => openEdit(f)}><Pencil size={13} /></IconBtn>
+            <IconBtn onClick={() => setConfirmId(f.id)} danger><Trash2 size={13} /></IconBtn>
+          </div>;
+        })}
+      </div>}
+
+    <Modal open={modal} onClose={() => setModal(false)} title={form.id ? "Editar conta fixa" : "Nova conta fixa"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button></>}>
+      <Field label="Nome"><input className="mf-input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Ex: Aluguel" />{errors.name && <ErrorText>{errors.name}</ErrorText>}</Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Valor (R$)"><input className="mf-input" inputMode="decimal" value={form.value} onChange={e => setForm(f => ({ ...f, value: e.target.value }))} placeholder="1.100,00" />{errors.value && <ErrorText>{errors.value}</ErrorText>}</Field>
+        <Field label="Dia de vencimento"><input className="mf-input" type="number" min="1" max="31" value={form.dueDay} onChange={e => setForm(f => ({ ...f, dueDay: e.target.value }))} />{errors.dueDay && <ErrorText>{errors.dueDay}</ErrorText>}</Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Categoria"><select className="mf-input" value={form.categoryId} onChange={e => setForm(f => ({ ...f, categoryId: e.target.value }))}><option value="">Selecione…</option>{data.categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}</select>{errors.categoryId && <ErrorText>{errors.categoryId}</ErrorText>}</Field>
+        <Field label="Conta para pagamento"><select className="mf-input" value={form.accountId} onChange={e => setForm(f => ({ ...f, accountId: e.target.value }))}><option value="">Selecione…</option>{data.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>{errors.accountId && <ErrorText>{errors.accountId}</ErrorText>}</Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Recorrência"><select className="mf-input" value={form.recurrence} onChange={e => setForm(f => ({ ...f, recurrence: e.target.value }))}><option value="monthly">Mensal</option><option value="yearly">Anual</option></select></Field>
+        <Field label="Começar em"><input className="mf-input" type="date" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))} /></Field>
+      </div>
+    </Modal>
+    <ConfirmDialog open={!!confirmId} title="Excluir conta fixa" message="Excluir o modelo recorrente? As ocorrências já criadas permanecem no histórico." onCancel={() => setConfirmId(null)} onConfirm={() => remove(confirmId)} />
+  </div>;
+}
+
+function invoiceMonthFor(purchaseDateISO, closingDay, offset) { const d=parseISO(purchaseDateISO); let base=new Date(d.getFullYear(),d.getMonth(),1); if(d.getDate()>Number(closingDay)) base=new Date(base.getFullYear(),base.getMonth()+1,1); const target=new Date(base.getFullYear(),base.getMonth()+offset,1); return target.getFullYear()+"-"+String(target.getMonth()+1).padStart(2,"0"); }
+function computeInvoices(card,purchases){const map={};for(const p of purchases.filter(p=>p.cardId===card.id)){const installments=Math.max(1,Number(p.installments)||1);for(let k=0;k<installments;k++){const mk=invoiceMonthFor(p.date,card.closingDay,k);if(!map[mk])map[mk]={total:0,items:[]};map[mk].total+=safeCents(p.installmentValueCents);map[mk].items.push({purchase:p,n:k+1});}}return map;}
+function emptyCard(){return{id:null,name:"",institution:"",limit:"",closingDay:10,dueDay:17,color:ACCOUNT_COLORS[0],active:true};} function emptyPurchase(){return{id:null,description:"",value:"",cardId:"",categoryId:"",date:isoToday(),installments:1,note:""};}
+function Cards({data,setData}){
+ const toast=useToast(); const [cardModal,setCardModal]=useState(false),[cardForm,setCardForm]=useState(emptyCard()),[cardErrors,setCardErrors]=useState({}),[confirmCardId,setConfirmCardId]=useState(null),[purchaseModal,setPurchaseModal]=useState(false),[purchaseForm,setPurchaseForm]=useState(emptyPurchase()),[purchaseErrors,setPurchaseErrors]=useState({}),[confirmPurchaseId,setConfirmPurchaseId]=useState(null),[expandedCard,setExpandedCard]=useState(data.cards[0]?.id||null),[payModal,setPayModal]=useState(null),[payAccount,setPayAccount]=useState(""); const paying=useRef(false); const currentMonth=monthKeyOf(isoToday());
+ const openNewCard=()=>{setCardForm(emptyCard());setCardErrors({});setCardModal(true)}; const openEditCard=c=>{setCardForm({...c,limit:(safeCents(c.limitCents)/100).toFixed(2).replace(".",",")});setCardErrors({});setCardModal(true)};
+ const saveCard=()=>{const e={};if(!safeString(cardForm.name).trim())e.name="Nome obrigatório";if(+cardForm.closingDay<1||+cardForm.closingDay>31)e.closingDay="Dia inválido";if(+cardForm.dueDay<1||+cardForm.dueDay>31)e.dueDay="Dia inválido";setCardErrors(e);if(Object.keys(e).length)return;const c={id:cardForm.id||uid(),name:cardForm.name.trim(),institution:cardForm.institution,limitCents:toCents(cardForm.limit),closingDay:+cardForm.closingDay,dueDay:+cardForm.dueDay,color:cardForm.color,active:true};setData(d=>({...d,cards:cardForm.id?d.cards.map(x=>x.id===cardForm.id?c:x):[...d.cards,c]}));toast(cardForm.id?"Cartão atualizado.":"Cartão adicionado.");setCardModal(false)};
+ const removeCard=id=>{setData(d=>({...d,cards:d.cards.filter(c=>c.id!==id),cardPurchases:d.cardPurchases.filter(p=>p.cardId!==id)}));toast("Cartão removido.");setConfirmCardId(null)};
+ const openNewPurchase=cardId=>{setPurchaseForm({...emptyPurchase(),cardId});setPurchaseErrors({});setPurchaseModal(true)}; const openEditPurchase=p=>{setPurchaseForm({...p,value:(safeCents(p.valueCents)/100).toFixed(2).replace(".",",")});setPurchaseErrors({});setPurchaseModal(true)};
+ const savePurchase=()=>{const e={};if(!safeString(purchaseForm.description).trim())e.description="Descrição obrigatória";if(toCents(purchaseForm.value)<=0)e.value="Valor inválido";if(!purchaseForm.categoryId)e.categoryId="Selecione a categoria";if(+purchaseForm.installments<1)e.installments="Mínimo 1 parcela";setPurchaseErrors(e);if(Object.keys(e).length)return;const valueCents=toCents(purchaseForm.value),n=Math.max(1,+purchaseForm.installments||1),iv=Math.floor(valueCents/n),remainder=valueCents-iv*n;setData(d=>{const item={id:purchaseForm.id||uid(),description:purchaseForm.description.trim(),valueCents,cardId:purchaseForm.cardId,categoryId:purchaseForm.categoryId,date:purchaseForm.date,installments:n,installmentValueCents:iv,note:purchaseForm.note||"",remainderCents:remainder};return {...d,cardPurchases:purchaseForm.id?d.cardPurchases.map(p=>p.id===purchaseForm.id?item:p):[...d.cardPurchases,item]}});toast(purchaseForm.id?"Compra atualizada.":"Compra registrada.");setPurchaseModal(false)};
+ const removePurchase=id=>{setData(d=>({...d,cardPurchases:d.cardPurchases.filter(p=>p.id!==id)}));toast("Compra removida.");setConfirmPurchaseId(null)};
+ const payInvoice=()=>{if(paying.current||!payModal||!payAccount)return;paying.current=true;setData(d=>{const key=`${payModal.cardId}-${payModal.monthKey}`;if(d.invoicePayments?.[key])return d;const card=d.cards.find(c=>c.id===payModal.cardId);if(!card)return d;const txId=uid();return {...d,transactions:[...d.transactions,{id:txId,description:`Fatura ${card.name} — ${monthLabel(payModal.monthKey)}`,valueCents:payModal.total,type:"expense",categoryId:"cat-cartao",accountId:payAccount,date:isoToday(),status:"paid",note:"Pagamento de fatura",transfer:false,invoicePaymentKey:key}],invoicePayments:{...(d.invoicePayments||{}),[key]:{transactionId:txId,paidDate:isoToday(),accountId:payAccount}}}});setPayModal(null);paying.current=false;toast("Fatura paga.")};
+ const unpayInvoice=(cardId,mk)=>{setData(d=>{const key=`${cardId}-${mk}`,p=d.invoicePayments?.[key];if(!p)return d;return {...d,transactions:d.transactions.filter(t=>t.id!==p.transactionId),invoicePayments:Object.fromEntries(Object.entries(d.invoicePayments||{}).filter(([k])=>k!==key))}});toast("Pagamento da fatura desfeito.")};
+ return <div className="mf-anim-in"><div style={{display:"flex",justifyContent:"flex-end",marginBottom:16}}><button className="mf-btn mf-btn-primary mf-focus" onClick={openNewCard}><Plus size={15}/> Novo cartão</button></div>{data.cards.length===0?<EmptyState icon={CreditCard} title="Nenhum cartão cadastrado" description="Adicione seus cartões de crédito para acompanhar faturas e compras." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNewCard}><Plus size={14}/> Novo cartão</button>}/>:<div style={{display:"flex",flexDirection:"column",gap:14}}>{data.cards.map(card=>{const purchases=data.cardPurchases.filter(p=>p.cardId===card.id),invoices=computeInvoices(card,data.cardPurchases),inv=invoices[currentMonth]||{total:0,items:[]},key=`${card.id}-${currentMonth}`,paid=data.invoicePayments?.[key],usedCents=purchases.reduce((sum,p)=>sum+safeCents(p.valueCents),0),isOpen=expandedCard===card.id;return <div key={card.id} className="mf-card" style={{padding:18}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,cursor:"pointer",flexWrap:"wrap"}} onClick={()=>setExpandedCard(isOpen?null:card.id)}><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{width:42,height:28,borderRadius:6,background:`linear-gradient(135deg, ${card.color}, ${card.color}99)`}}/><div><div style={{fontWeight:700,fontSize:15}}>{card.name}</div><div style={{fontSize:11.5,color:"var(--text-faint)"}}>{card.institution||"—"} · fecha dia {card.closingDay} · vence dia {card.dueDay}</div></div></div><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{textAlign:"right"}}><div style={{fontSize:11,color:"var(--text-faint)"}}>Limite disponível</div><Money cents={Math.max(0,card.limitCents-usedCents)} weight={700}/></div><div onClick={e=>e.stopPropagation()} style={{display:"flex",gap:4}}><IconBtn onClick={()=>openEditCard(card)}><Pencil size={13}/></IconBtn><IconBtn onClick={()=>setConfirmCardId(card.id)} danger><Trash2 size={13}/></IconBtn></div>{isOpen?<ChevronLeft style={{transform:"rotate(-90deg)"}} size={16}/>:<ChevronRight size={16}/>}</div></div>{isOpen&&<div style={{marginTop:18,paddingTop:16,borderTop:"1px solid var(--border)"}}><SectionTitle title={`Fatura atual · ${monthLabel(currentMonth)}`} action={<LinkBtn onClick={()=>openNewPurchase(card.id)}>+ Nova compra</LinkBtn>}/><div className="mf-card" style={{padding:14,background:"var(--surface-2)",marginBottom:18}}><div style={{fontSize:11.5,color:"var(--text-faint)",marginBottom:4}}>Competência {monthLabel(currentMonth)}</div><Money cents={inv.total} size={21} weight={700}/><div style={{fontSize:11.5,color:"var(--text-faint)",margin:"6px 0 10px"}}>{inv.items.length} {inv.items.length===1?"lançamento":"lançamentos"} nesta fatura</div>{paid?<div style={{display:"flex",gap:8,alignItems:"center"}}><Badge color="var(--income)">Paga</Badge><button className="mf-btn mf-btn-ghost mf-focus" style={{padding:"5px 9px",fontSize:11.5}} onClick={()=>unpayInvoice(card.id,currentMonth)}>Desmarcar como paga</button></div>:<button className="mf-btn mf-btn-primary mf-focus" disabled={inv.total<=0} onClick={()=>{setPayModal({cardId:card.id,monthKey:currentMonth,total:inv.total});setPayAccount(data.accounts[0]?.id||"")}}>Pagar fatura</button>}</div><SectionTitle title="Compras no cartão"/><div style={{display:"flex",flexDirection:"column",gap:8}}>{purchases.length===0?<EmptyState icon={CreditCard} title="Nenhuma compra registrada" description="Registre as compras feitas neste cartão."/>:purchases.slice().sort((a,b)=>a.date<b.date?1:-1).map(p=>{const cat=data.categories.find(c=>c.id===p.categoryId);return <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderTop:"1px solid var(--border)"}}><IconBadge icon={cat?.icon||"💳"} color={cat?.color||"#888"}/><div style={{flex:1,minWidth:0}}><div style={{fontWeight:600,fontSize:13.5}}>{p.description}</div><div style={{fontSize:11.5,color:"var(--text-faint)"}}>{fmtDateBR(p.date)} · {p.installments}x de {brl(p.installmentValueCents)}</div></div><Money cents={p.valueCents} weight={700}/><div style={{display:"flex",gap:4}}><IconBtn onClick={()=>openEditPurchase(p)}><Pencil size={13}/></IconBtn><IconBtn onClick={()=>setConfirmPurchaseId(p.id)} danger><Trash2 size={13}/></IconBtn></div></div>})}</div></div>}</div>})}</div>}
+ <Modal open={cardModal} onClose={()=>setCardModal(false)} title={cardForm.id?"Editar cartão":"Novo cartão"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setCardModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={saveCard}>Salvar</button></>}><Field label="Nome"><input className="mf-input" value={cardForm.name} onChange={e=>setCardForm(f=>({...f,name:e.target.value}))}/>{cardErrors.name&&<ErrorText>{cardErrors.name}</ErrorText>}</Field><Field label="Instituição"><input className="mf-input" value={cardForm.institution} onChange={e=>setCardForm(f=>({...f,institution:e.target.value}))}/></Field><Field label="Limite (R$)"><input className="mf-input" inputMode="decimal" value={cardForm.limit} onChange={e=>setCardForm(f=>({...f,limit:e.target.value}))}/></Field><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Dia de fechamento"><input className="mf-input" type="number" value={cardForm.closingDay} onChange={e=>setCardForm(f=>({...f,closingDay:e.target.value}))}/></Field><Field label="Dia de vencimento"><input className="mf-input" type="number" value={cardForm.dueDay} onChange={e=>setCardForm(f=>({...f,dueDay:e.target.value}))}/></Field></div><Field label="Cor"><div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{ACCOUNT_COLORS.map(c=><button key={c} className="mf-focus" onClick={()=>setCardForm(f=>({...f,color:c}))} style={{width:28,height:28,borderRadius:"50%",background:c,border:cardForm.color===c?"3px solid var(--text)":"2px solid transparent",cursor:"pointer"}}/>)}</div></Field></Modal>
+ <Modal open={purchaseModal} onClose={()=>setPurchaseModal(false)} title={purchaseForm.id?"Editar compra":"Nova compra"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setPurchaseModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={savePurchase}>Salvar</button></>}><Field label="Descrição"><input className="mf-input" value={purchaseForm.description} onChange={e=>setPurchaseForm(f=>({...f,description:e.target.value}))}/>{purchaseErrors.description&&<ErrorText>{purchaseErrors.description}</ErrorText>}</Field><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Valor total (R$)"><input className="mf-input" inputMode="decimal" value={purchaseForm.value} onChange={e=>setPurchaseForm(f=>({...f,value:e.target.value}))}/>{purchaseErrors.value&&<ErrorText>{purchaseErrors.value}</ErrorText>}</Field><Field label="Data"><input className="mf-input" type="date" value={purchaseForm.date} onChange={e=>setPurchaseForm(f=>({...f,date:e.target.value}))}/></Field></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Categoria"><select className="mf-input" value={purchaseForm.categoryId} onChange={e=>setPurchaseForm(f=>({...f,categoryId:e.target.value}))}><option value="">Selecione…</option>{data.categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}</select>{purchaseErrors.categoryId&&<ErrorText>{purchaseErrors.categoryId}</ErrorText>}</Field><Field label="Parcelas"><input className="mf-input" type="number" min="1" value={purchaseForm.installments} onChange={e=>setPurchaseForm(f=>({...f,installments:e.target.value}))}/>{purchaseErrors.installments&&<ErrorText>{purchaseErrors.installments}</ErrorText>}</Field></div>{purchaseForm.value&&purchaseForm.installments>0&&<div style={{fontSize:12.5,color:"var(--text-muted)"}}>{purchaseForm.installments}x de <Money cents={Math.floor(toCents(purchaseForm.value)/(purchaseForm.installments||1))} size={13}/></div>}</Modal>
+ <Modal open={!!payModal} onClose={()=>setPayModal(null)} title="Pagar fatura" footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setPayModal(null)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={payInvoice}>Confirmar pagamento</button></>}><p style={{fontSize:14}}>Fatura de <b>{payModal&&monthLabel(payModal.monthKey)}</b>: <Money cents={payModal?.total||0} weight={700}/></p><Field label="Pagar com a conta"><select className="mf-input" value={payAccount} onChange={e=>setPayAccount(e.target.value)}>{data.accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></Field></Modal><ConfirmDialog open={!!confirmCardId} title="Excluir cartão" message="Excluir este cartão e suas compras?" onCancel={()=>setConfirmCardId(null)} onConfirm={()=>removeCard(confirmCardId)}/><ConfirmDialog open={!!confirmPurchaseId} title="Excluir compra" message="Excluir esta compra do cartão?" onCancel={()=>setConfirmPurchaseId(null)} onConfirm={()=>removePurchase(confirmPurchaseId)}/></div>;
 }
 
 /* =========================================================================
@@ -2030,7 +1857,12 @@ function Reports({ data }) {
     for (const t of data.transactions) {
       if (t.type !== "expense" || t.status !== "paid" || t.transfer) continue;
       if (t.date < start || t.date > end) continue;
-      map[t.categoryId] = (map[t.categoryId] || 0) + t.valueCents;
+      map[t.categoryId] = (map[t.categoryId] || 0) + safeCents(t.valueCents);
+    }
+    for (const b of data.bills || []) {
+      const d = b.paidDate || b.dueDate;
+      if (b.status !== "paid" || d < start || d > end) continue;
+      map[b.categoryId] = (map[b.categoryId] || 0) + safeCents(b.valueCents);
     }
     return Object.entries(map).map(([id, v]) => ({ name: fin.categoryName(id), value: v / 100 })).sort((a, b) => b.value - a.value);
   }, [data.transactions, start, end, fin]);
@@ -2054,12 +1886,18 @@ function Reports({ data }) {
     for (const t of data.transactions) {
       if (t.type !== "expense" || t.status !== "paid" || t.transfer) continue;
       if (t.date < start || t.date > end) continue;
-      map[t.accountId] = (map[t.accountId] || 0) + t.valueCents;
+      map[t.accountId] = (map[t.accountId] || 0) + safeCents(t.valueCents);
+    }
+    for (const b of data.bills || []) {
+      const d = b.paidDate || b.dueDate;
+      if (b.status !== "paid" || d < start || d > end) continue;
+      const accountId = b.paymentAccountId || b.accountId;
+      map[accountId] = (map[accountId] || 0) + safeCents(b.valueCents);
     }
     return data.accounts.map((a) => ({ name: a.name, value: map[a.id] || 0 })).filter((x) => x.value > 0);
   }, [data.transactions, data.accounts, start, end]);
 
-  const evolution = useMemo(() => buildEvolution(data.transactions), [data.transactions]);
+  const evolution = useMemo(() => buildEvolution(data), [data]);
 
   const exportCSV = () => {
     const rows = data.transactions.filter((t) => t.status === "paid" && t.date >= start && t.date <= end)
@@ -2483,6 +2321,21 @@ function Categories({ data, setData }) {
    CONFIGURAÇÕES
    ========================================================================= */
 
+function emptyData(theme = "dark") {
+  return {
+    categories: DEFAULT_CATEGORIES,
+    accounts: [],
+    cards: [],
+    transactions: [],
+    bills: [],
+    cardPurchases: [],
+    invoicePayments: {},
+    investments: [],
+    goals: [],
+    settings: { theme, activeMonth: isoToday().slice(0, 7), closedMonths: [] },
+  };
+}
+
 function SettingsSection({ data, setData }) {
   const toast = useToast();
   const [confirmReset, setConfirmReset] = useState(false);
@@ -2497,8 +2350,10 @@ function SettingsSection({ data, setData }) {
   };
 
   const resetData = () => {
-    setData(seedData());
-    toast("Dados reiniciados.");
+    // Reiniciar significa realmente zerar os dados da conta, sem recriar
+    // lançamentos, contas, cartões, investimentos ou metas de exemplo.
+    setData(emptyData(data.settings?.theme || "dark"));
+    toast("Dados zerados.");
     setConfirmReset(false);
   };
 
@@ -2527,7 +2382,7 @@ function SettingsSection({ data, setData }) {
         <ResultLine label="Metas" value={data.goals.length} />
       </div>
 
-      <ConfirmDialog open={confirmReset} title="Reiniciar todos os dados" message="Isso vai apagar seus dados desta conta e deixar contas, cartões, transações, contas a pagar, investimentos e metas zerados. As categorias padrão serão mantidas. Essa ação não pode ser desfeita." onCancel={() => setConfirmReset(false)} onConfirm={resetData} />
+      <ConfirmDialog open={confirmReset} title="Reiniciar todos os dados" message="Isso vai apagar todos os seus dados financeiros desta conta. Contas, cartões, transações, contas a pagar, compras, investimentos e metas ficarão zerados. Essa ação não pode ser desfeita." onCancel={() => setConfirmReset(false)} onConfirm={resetData} />
     </div>
   );
 }
