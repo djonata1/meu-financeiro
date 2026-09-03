@@ -1090,10 +1090,13 @@ function Dashboard({ data, setData, goTab, userName }) {
     .map((f) => {
       const startDate = f.startDate || isoToday();
       const startMonth = monthKeyOf(startDate);
-      const occurrence = data.bills.find(
+      // Uma ocorrência anterior ao "Começar em" nunca representa a conta fixa.
+      // Isso evita que uma ocorrência antiga continue aparecendo no Dashboard
+      // depois que o primeiro vencimento foi definido para um mês futuro.
+      const beforeStart = activeMonth < startMonth;
+      const occurrence = beforeStart ? null : data.bills.find(
         (b) => b.fixedAccountId === f.id && b.occurrenceKey === occurrenceKey(f.id, activeMonth)
       );
-      const beforeStart = activeMonth < startMonth;
       const displayMonth = beforeStart ? startMonth : activeMonth;
       return {
         ...f,
@@ -1615,7 +1618,16 @@ function FixedAccounts({ data, setData }) {
 
     setData((d) => {
       const fixed = form.id ? (d.fixedAccounts || []).map(x => x.id === form.id ? f : x) : [...(d.fixedAccounts || []), f];
-      return ensureFixedOccurrences({ ...d, fixedAccounts: fixed }, month);
+      const startMonth = monthKeyOf(f.startDate || isoToday());
+      // Se o primeiro vencimento foi movido para um mês futuro, remove
+      // ocorrências antigas desse modelo que ficaram antes do início.
+      // As ocorrências válidas do histórico e dos meses a partir do início
+      // permanecem intactas.
+      const cleanedBills = (d.bills || []).filter((b) => {
+        if (b.fixedAccountId !== f.id) return true;
+        return monthKeyOf(b.dueDate || isoToday()) >= startMonth;
+      });
+      return ensureFixedOccurrences({ ...d, fixedAccounts: fixed, bills: cleanedBills }, month);
     });
     toast(form.id ? "Conta fixa atualizada." : "Conta fixa criada.");
     setModal(false);
