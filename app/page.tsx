@@ -7,6 +7,7 @@ import {
   LayoutDashboard, ArrowLeftRight, Landmark, CreditCard, TrendingUp, Target,
   BarChart3, Calculator as CalcIcon, Tags, Settings as SettingsIcon, Menu, X,
   Plus, Pencil, Trash2, ArrowUpCircle, ArrowDownCircle, Sun, Moon, Check,
+  Eye, EyeOff,
   ChevronRight, ChevronLeft, Wallet, Download, AlertCircle, Search, Filter,
   ArrowRightLeft, Delete, Divide
 } from "lucide-react";
@@ -507,6 +508,11 @@ const ThemeVars = () => (
     .mf-btn-danger { background: var(--expense); color: white; }
     .mf-btn-danger:hover { filter: brightness(1.08); }
     .mf-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .mf-mobile-bottom { display: none; }
+    @media (max-width: 899px) {
+      .mf-mobile-bottom { display: flex; }
+      .mf-main-scroll { padding-bottom: 82px; }
+    }
     @keyframes mf-fade-in { from { opacity: 0; transform: translateY(4px);} to { opacity: 1; transform: translateY(0);} }
     @keyframes mf-pop { from { opacity: 0; transform: scale(.96);} to { opacity: 1; transform: scale(1);} }
     .mf-anim-in { animation: mf-fade-in .2s ease; }
@@ -530,6 +536,13 @@ const ThemeVars = () => (
 /* =========================================================================
    Contexto de Toasts
    ========================================================================= */
+
+const PrivacyCtx = createContext(null);
+function PrivacyProvider({ children }) {
+  const [hidden, setHidden] = useState(false);
+  return <PrivacyCtx.Provider value={{ hidden, setHidden }}>{children}</PrivacyCtx.Provider>;
+}
+const usePrivacy = () => useContext(PrivacyCtx);
 
 const ToastCtx = createContext(null);
 function ToastProvider({ children }) {
@@ -563,10 +576,11 @@ const useToast = () => useContext(ToastCtx);
    ========================================================================= */
 
 function Money({ cents, sign = false, size = "inherit", positiveColor, negativeColor, weight = 600 }) {
+  const privacy = usePrivacy();
   const n = cents || 0;
   let color = "inherit";
   if (sign) color = n > 0 ? (positiveColor || "var(--income)") : n < 0 ? (negativeColor || "var(--expense)") : "inherit";
-  return <span className="mf-mono" style={{ fontSize: size, color, fontWeight: weight }}>{brl(n, { sign })}</span>;
+  return <span className="mf-mono" style={{ fontSize: size, color, fontWeight: weight }}>{privacy?.hidden ? "••••••" : brl(n, { sign })}</span>;
 }
 
 function Modal({ open, onClose, title, children, width = 520, footer }) {
@@ -637,7 +651,7 @@ function StatCard({ label, valueCents, icon: Icon, tone = "neutral", sub }) {
         </div>
       </div>
       <div className="mf-mono" style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.01em", color: tone === "neutral" ? "var(--text)" : toneColor, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {brl(valueCents)}
+        <Money cents={valueCents} weight={700} />
       </div>
       <div style={{ height: 3, background: `linear-gradient(90deg, ${toneColor}, transparent)`, borderRadius: 3, marginTop: 12, opacity: .55 }} />
       {sub && <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 8 }}>{sub}</div>}
@@ -711,6 +725,8 @@ export default function MeuFinanceiro() {
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("dashboard");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [userName, setUserName] = useState("");
+  const [quickAction, setQuickAction] = useState(null);
   const saveTimer = useRef(null);
 
   const handleLogout = async () => {
@@ -731,6 +747,9 @@ export default function MeuFinanceiro() {
         window.location.href = "/login";
         return;
       }
+
+      const metadataName = safeString(user.user_metadata?.name || user.user_metadata?.full_name || user.user_metadata?.nome).trim();
+      setUserName(metadataName || safeString(user.email).split("@")[0] || "Usuário");
 
       const d = await loadState();
       if (!active) return;
@@ -763,7 +782,7 @@ export default function MeuFinanceiro() {
     const currentMonth = isoToday().slice(0, 7);
     setData((d) => {
       const activeMonth = d.settings?.activeMonth;
-      const nextActiveMonth = activeMonth && activeMonth >= currentMonth ? activeMonth : currentMonth;
+      const nextActiveMonth = activeMonth && /^\d{4}-\d{2}$/.test(activeMonth) ? activeMonth : currentMonth;
       return ensureFixedOccurrences({
         ...d,
         settings: { ...(d.settings || {}), activeMonth: nextActiveMonth },
@@ -784,6 +803,7 @@ export default function MeuFinanceiro() {
 
   return (
     <ToastProvider>
+      <PrivacyProvider>
       <div className={`mf-root ${theme}`} style={{ minHeight: "100vh", borderRadius: 0, overflow: "hidden", display: "flex", position: "relative", fontSize: 14 }}>
         <ThemeVars />
         <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" />
@@ -838,10 +858,10 @@ export default function MeuFinanceiro() {
             <h2 className="mf-display" style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{NAV.find((n) => n.key === tab)?.label}</h2>
           </header>
           <div style={{ padding: "20px", maxWidth: 1180, margin: "0 auto" }}>
-            {tab === "dashboard" && <Dashboard data={data} setData={setData} goTab={setTab} />}
-            {tab === "transactions" && <Transactions data={data} setData={setData} />}
+            {tab === "dashboard" && <Dashboard data={data} setData={setData} goTab={setTab} userName={userName} />}
+            {tab === "transactions" && <Transactions data={data} setData={setData} quickAction={quickAction} clearQuickAction={() => setQuickAction(null)} />}
             {tab === "accounts" && <Accounts data={data} setData={setData} />}
-            {tab === "cards" && <Cards data={data} setData={setData} />}
+            {tab === "cards" && <Cards data={data} setData={setData} quickAction={quickAction} clearQuickAction={() => setQuickAction(null)} />}
             {tab === "investments" && <Investments data={data} setData={setData} />}
             {tab === "goals" && <Goals data={data} setData={setData} />}
             {tab === "reports" && <Reports data={data} />}
@@ -850,7 +870,15 @@ export default function MeuFinanceiro() {
             {tab === "settings" && <SettingsSection data={data} setData={setData} />}
           </div>
         </main>
+
+        <MobileQuickActions
+          tab={tab}
+          setTab={setTab}
+          quickAction={quickAction}
+          setQuickAction={setQuickAction}
+        />
       </div>
+      </PrivacyProvider>
     </ToastProvider>
   );
 }
@@ -933,6 +961,48 @@ function useFinance(data) {
   }, [data]);
 }
 
+function PrivacyToggle() {
+  const { hidden, setHidden } = usePrivacy();
+  return (
+    <button aria-label={hidden ? "Mostrar valores" : "Ocultar valores"} className="mf-focus" onClick={() => setHidden(v => !v)} style={{ width: 38, height: 38, borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text-muted)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+      {hidden ? <EyeOff size={18}/> : <Eye size={18}/>}
+    </button>
+  );
+}
+
+function MobileQuickActions({ tab, setTab, quickAction, setQuickAction }) {
+  const [open, setOpen] = useState(false);
+  const action = (type) => {
+    setOpen(false);
+    setQuickAction(type);
+    if (type === "income" || type === "expense" || type === "transfer") setTab("transactions");
+    if (type === "cardExpense") setTab("cards");
+  };
+  const items = [
+    { key: "income", label: "Receita", icon: ArrowUpCircle, tone: "var(--income)" },
+    { key: "cardExpense", label: "Despesa Cartão", icon: CreditCard, tone: "var(--brand-2)" },
+    { key: "transfer", label: "Transferência", icon: ArrowRightLeft, tone: "var(--brand-2)" },
+    { key: "expense", label: "Despesa", icon: ArrowDownCircle, tone: "var(--expense)" },
+  ];
+  return (
+    <div className="mf-mobile-bottom" style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 90, background: "var(--surface)", borderTop: "1px solid var(--border)", padding: "8px 14px max(8px, env(safe-area-inset-bottom))", justifyContent: "space-around", alignItems: "center" }}>
+      {open && <div style={{ position: "absolute", left: 0, right: 0, bottom: 72, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, padding: "0 18px" }}>
+        {items.map(({ key, label, icon: Icon, tone }) => (
+          <button key={key} className="mf-card mf-focus mf-anim-pop" onClick={() => action(key)} style={{ minHeight: 76, padding: 10, color: "var(--text)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 7 }}>
+            <span style={{ width: 38, height: 38, borderRadius: "50%", background: `${tone}22`, color: tone, display: "flex", alignItems: "center", justifyContent: "center" }}><Icon size={19}/></span>
+            <span style={{ fontSize: 11.5, fontWeight: 700 }}>{label}</span>
+          </button>
+        ))}
+      </div>}
+      <button className="mf-focus" onClick={() => setTab("dashboard")} style={{ background: "none", border: 0, color: tab === "dashboard" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><LayoutDashboard size={19}/><span>Início</span></button>
+      <button className="mf-focus" onClick={() => setTab("transactions")} style={{ background: "none", border: 0, color: tab === "transactions" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><ArrowLeftRight size={19}/><span>Transações</span></button>
+      <button aria-label="Adicionar lançamento" className="mf-focus" onClick={() => setOpen(v => !v)} style={{ width: 54, height: 54, marginTop: -26, borderRadius: "50%", border: "4px solid var(--bg)", background: "var(--brand)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 8px 22px rgba(0,0,0,.25)" }}>{open ? <X size={27}/> : <Plus size={28}/>}</button>
+      <button className="mf-focus" onClick={() => setTab("goals")} style={{ background: "none", border: 0, color: tab === "goals" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><Target size={19}/><span>Metas</span></button>
+      <button className="mf-focus" onClick={() => setTab("settings")} style={{ background: "none", border: 0, color: tab === "settings" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><SettingsIcon size={19}/><span>Mais</span></button>
+    </div>
+  );
+}
+
 /* =========================================================================
    DASHBOARD / FECHAMENTO DE MÊS
    ========================================================================= */
@@ -941,8 +1011,36 @@ function getActiveMonth(data) {
   const actual = isoToday().slice(0, 7);
   const stored = data?.settings?.activeMonth;
   if (!stored || !/^\d{4}-\d{2}$/.test(stored)) return actual;
-  // Se o calendário avançou, o mês atual volta a ser o mês ativo.
-  return stored < actual ? actual : stored;
+  return stored;
+}
+
+function fullMonthLabel(key) {
+  const [y, m] = key.split("-").map(Number);
+  const names = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+  return `${names[m - 1]} ${y}`;
+}
+
+function MonthSelector({ data, setData }) {
+  const activeMonth = getActiveMonth(data);
+  const months = [-2, -1, 0, 1, 2].map(offset => monthKeyOf(addMonthsISO(activeMonth + "-01", offset)));
+  const changeMonth = (monthKey) => {
+    setData(d => ensureFixedOccurrences({
+      ...d,
+      settings: { ...(d.settings || {}), activeMonth: monthKey },
+    }, monthKey));
+  };
+  const move = (offset) => changeMonth(monthKeyOf(addMonthsISO(activeMonth + "-01", offset)));
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+      <button aria-label="Mês anterior" className="mf-focus" onClick={() => move(-1)} style={{ width: 36, height: 36, flexShrink: 0, borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><ChevronLeft size={18}/></button>
+      <div className="mf-month-strip" style={{ display: "flex", gap: 8, overflowX: "auto", flex: 1, scrollbarWidth: "none", padding: "2px 0" }}>
+        {months.map(mk => (
+          <button key={mk} className="mf-focus" onClick={() => changeMonth(mk)} style={{ flex: "0 0 auto", minWidth: 118, padding: "10px 16px", borderRadius: 999, border: "1px solid", borderColor: mk === activeMonth ? "var(--brand)" : "var(--border)", background: mk === activeMonth ? "var(--brand)" : "var(--surface)", color: mk === activeMonth ? "white" : "var(--text-muted)", fontWeight: 700, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" }}>{fullMonthLabel(mk)}</button>
+        ))}
+      </div>
+      <button aria-label="Próximo mês" className="mf-focus" onClick={() => move(1)} style={{ width: 36, height: 36, flexShrink: 0, borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><ChevronRight size={18}/></button>
+    </div>
+  );
 }
 
 function monthEndISO(monthKey) {
@@ -951,7 +1049,7 @@ function monthEndISO(monthKey) {
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
 
-function Dashboard({ data, setData, goTab }) {
+function Dashboard({ data, setData, goTab, userName }) {
   const fin = useFinance(data);
   const today = isoToday();
   const activeMonth = getActiveMonth(data);
@@ -959,8 +1057,10 @@ function Dashboard({ data, setData, goTab }) {
   const monthEnd = monthEndISO(activeMonth);
   const periodEnd = activeMonth === today.slice(0, 7) ? today : monthEnd;
   const { income, expense, savings } = fin.periodTotals(monthStart, periodEnd);
+  const monthBalance = savings;
 
   const recent = [...data.transactions]
+    .filter(t => monthKeyOf(t.date) === activeMonth)
     .sort((a, b) => (b.date > a.date ? 1 : -1))
     .slice(0, 6);
 
@@ -1021,34 +1121,19 @@ function Dashboard({ data, setData, goTab }) {
 
   const evolution = useMemo(() => buildEvolution(data), [data]);
 
-  const closeMonth = () => {
-    const nextMonth = addMonthsISO(activeMonth + "-01", 1).slice(0, 7);
-    const ok = window.confirm(
-      `Fechar ${monthLabel(activeMonth)}?\n\nNada será apagado. O mês ficará no histórico e o painel passará para ${monthLabel(nextMonth)}. Parcelas futuras continuam normalmente.`
-    );
-    if (!ok) return;
-    setData((d) => ensureFixedOccurrences({
-      ...d,
-      settings: {
-        ...(d.settings || {}),
-        activeMonth: nextMonth,
-        closedMonths: Array.from(new Set([...(d.settings?.closedMonths || []), activeMonth])),
-      },
-    }, nextMonth));
-  };
-
   return (
     <div className="mf-anim-in">
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
         <div>
-          <div className="mf-display" style={{ fontSize: 15.5, fontWeight: 600 }}>Mês ativo: {monthLabel(activeMonth)}</div>
-          <div style={{ fontSize: 12, color: "var(--text-faint)" }}>Ao virar o mês, os indicadores mensais começam novamente. O saldo bancário não zera.</div>
+          <div className="mf-display" style={{ fontSize: 21, fontWeight: 700 }}>Olá, {userName || "Usuário"} 👋</div>
+          <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 3 }}>Resumo financeiro de {fullMonthLabel(activeMonth)}.</div>
         </div>
-        <button className="mf-btn mf-btn-ghost mf-focus" onClick={closeMonth}>Fechar mês</button>
+        <PrivacyToggle />
       </div>
+      <MonthSelector data={data} setData={setData} />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 20 }}>
-        <StatCard label="Saldo" valueCents={fin.totalBalance} icon={Wallet} tone="neutral" />
+        <StatCard label="Saldo" valueCents={monthBalance} icon={Wallet} tone="neutral" />
         <StatCard label="Entradas (mês)" valueCents={income} icon={ArrowUpCircle} tone="income" />
         <StatCard label="Saídas (mês)" valueCents={expense} icon={ArrowDownCircle} tone="expense" />
         <StatCard label="Economia (mês)" valueCents={savings} icon={TrendingUp} tone={savings >= 0 ? "income" : "expense"} />
@@ -1207,15 +1292,25 @@ function TxRow({ t, cat }) {
 
 function emptyTx() { return { id: null, description: "", value: "", type: "expense", categoryId: "", accountId: "", date: isoToday(), note: "" }; }
 
-function Transactions({ data, setData }) {
+function Transactions({ data, setData, quickAction, clearQuickAction }) {
   const toast = useToast(); const fin = useFinance(data);
+  const activeMonth = getActiveMonth(data);
   const [modal, setModal] = useState(false), [form, setForm] = useState(emptyTx()), [errors, setErrors] = useState({}), [confirmId, setConfirmId] = useState(null), [search, setSearch] = useState(""), [filterType, setFilterType] = useState("all"), [sortDesc, setSortDesc] = useState(true), [transferModal, setTransferModal] = useState(false);
-  const openNew = () => { setForm(emptyTx()); setErrors({}); setModal(true); };
+  const openNew = (type = "expense") => { setForm({ ...emptyTx(), type, date: activeMonth + "-01" }); setErrors({}); setModal(true); };
+  useEffect(() => {
+    if (!quickAction) return;
+    if (quickAction === "income" || quickAction === "expense") openNew(quickAction);
+    if (quickAction === "transfer") {
+      // Transferência é aberta pelo botão próprio da tela de transações.
+      setTransferModal(true);
+    }
+    clearQuickAction?.();
+  }, [quickAction]);
   const openEdit = (t) => { setForm({ ...t, value: (safeCents(t.valueCents) / 100).toFixed(2).replace(".", ",") }); setErrors({}); setModal(true); };
   const validate = () => { const e = {}; if (!safeString(form.description).trim()) e.description = "Descrição obrigatória"; if (toCents(form.value) <= 0) e.value = "Valor precisa ser maior que zero"; if (!form.categoryId) e.categoryId = "Selecione uma categoria"; if (!form.accountId) e.accountId = "Selecione uma conta"; if (!form.date) e.date = "Data obrigatória"; setErrors(e); return !Object.keys(e).length; };
   const save = () => { if (!validate()) return; const valueCents = toCents(form.value); setData((d) => ({ ...d, transactions: form.id ? d.transactions.map((t) => t.id === form.id ? { ...t, description: form.description.trim(), valueCents, type: form.type, categoryId: form.categoryId, accountId: form.accountId, date: form.date, note: form.note || "", status: "paid", transfer: !!t.transfer } : t) : [...d.transactions, { id: uid(), description: form.description.trim(), valueCents, type: form.type, categoryId: form.categoryId, accountId: form.accountId, date: form.date, status: "paid", note: form.note || "", transfer: false }] })); toast(form.id ? "Transação atualizada." : "Transação adicionada."); setModal(false); };
   const remove = (id) => { setData((d) => ({ ...d, transactions: d.transactions.filter((t) => t.id !== id) })); toast("Transação removida."); setConfirmId(null); };
-  const list = useMemo(() => { let arr = data.transactions.filter((t) => !t.sourceBillId && !t.sourceBillOccurrenceId); if (filterType !== "all") arr = arr.filter((t) => t.type === filterType); const s = search.trim().toLowerCase(); if (s) arr = arr.filter((t) => safeString(t.description).toLowerCase().includes(s)); return [...arr].sort((a,b) => sortDesc ? (a.date < b.date ? 1 : -1) : (a.date > b.date ? 1 : -1)); }, [data.transactions, filterType, search, sortDesc]);
+  const list = useMemo(() => { let arr = data.transactions.filter((t) => !t.sourceBillId && !t.sourceBillOccurrenceId && monthKeyOf(t.date) === activeMonth); if (filterType !== "all") arr = arr.filter((t) => t.type === filterType); const s = search.trim().toLowerCase(); if (s) arr = arr.filter((t) => safeString(t.description).toLowerCase().includes(s)); return [...arr].sort((a,b) => sortDesc ? (a.date < b.date ? 1 : -1) : (a.date > b.date ? 1 : -1)); }, [data.transactions, filterType, search, sortDesc, activeMonth]);
   return <div className="mf-anim-in">
     <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:16, alignItems:"center" }}><div style={{position:"relative",flex:"1 1 200px",minWidth:160}}><Search size={15} style={{position:"absolute",left:11,top:11,color:"var(--text-faint)"}}/><input className="mf-input" style={{paddingLeft:34}} placeholder="Pesquisar transações…" value={search} onChange={(e)=>setSearch(e.target.value)}/></div><SegTabs value={filterType} onChange={setFilterType} options={[{value:"all",label:"Todas"},{value:"income",label:"Entradas"},{value:"expense",label:"Saídas"}]}/><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setSortDesc(s=>!s)}><Filter size={14}/> {sortDesc?"Mais recentes":"Mais antigas"}</button><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setTransferModal(true)}><ArrowRightLeft size={14}/> Transferir</button><button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={15}/> Nova transação</button></div>
     {list.length===0?<EmptyState icon={ArrowLeftRight} title="Nenhuma transação encontrada" description="Adicione uma transação ou ajuste os filtros de pesquisa." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14}/> Nova transação</button>}/>:<div className="mf-card" style={{overflow:"hidden"}}>{list.map((t,idx)=>{const cat=fin.categoryOf(t.categoryId),acc=data.accounts.find(a=>a.id===t.accountId);return <div key={t.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderTop:idx===0?"none":"1px solid var(--border)"}}><IconBadge icon={cat?.icon||"💸"} color={cat?.color||"#888"}/><div style={{flex:1,minWidth:0}}><div style={{fontWeight:600,fontSize:13.5}}>{t.description}</div><div style={{fontSize:11.5,color:"var(--text-faint)"}}>{fmtDateBR(t.date)} · {cat?.name||"—"} · {acc?.name||"—"}</div></div><Money cents={t.type==="income"?t.valueCents:-t.valueCents} sign weight={700} size={14}/><div style={{display:"flex",gap:4}}><IconBtn onClick={()=>openEdit(t)}><Pencil size={14}/></IconBtn><IconBtn onClick={()=>setConfirmId(t.id)} danger><Trash2 size={14}/></IconBtn></div></div>})}</div>}
@@ -1326,9 +1421,9 @@ function Bills({ data, setData }) {
   const [errors, setErrors] = useState({});
   const [confirmId, setConfirmId] = useState(null);
   const [filter, setFilter] = useState("pending");
-  const currentMonth = monthKeyOf(isoToday());
+  const currentMonth = getActiveMonth(data);
 
-  const openNew = () => { setForm(emptyBill()); setErrors({}); setModal(true); };
+  const openNew = () => { setForm({ ...emptyBill(), dueDate: getActiveMonth(data) + "-01" }); setErrors({}); setModal(true); };
   const openEdit = (b) => { setForm({ ...b, value: (safeCents(b.valueCents) / 100).toFixed(2).replace(".", ",") }); setErrors({}); setModal(true); };
 
   const save = () => {
@@ -1554,12 +1649,18 @@ function FixedAccounts({ data, setData }) {
 function invoiceMonthFor(purchaseDateISO, closingDay, offset) { const d=parseISO(purchaseDateISO); let base=new Date(d.getFullYear(),d.getMonth(),1); if(d.getDate()>Number(closingDay)) base=new Date(base.getFullYear(),base.getMonth()+1,1); const target=new Date(base.getFullYear(),base.getMonth()+offset,1); return target.getFullYear()+"-"+String(target.getMonth()+1).padStart(2,"0"); }
 function computeInvoices(card,purchases){const map={};for(const p of purchases.filter(p=>p.cardId===card.id)){const installments=Math.max(1,Number(p.installments)||1);for(let k=0;k<installments;k++){const mk=invoiceMonthFor(p.date,card.closingDay,k);if(!map[mk])map[mk]={total:0,items:[]};map[mk].total+=safeCents(p.installmentValueCents);map[mk].items.push({purchase:p,n:k+1});}}return map;}
 function emptyCard(){return{id:null,name:"",institution:"",limit:"",closingDay:10,dueDay:17,color:ACCOUNT_COLORS[0],active:true};} function emptyPurchase(){return{id:null,description:"",value:"",cardId:"",categoryId:"",date:isoToday(),installments:1,note:""};}
-function Cards({data,setData}){
- const toast=useToast(); const [cardModal,setCardModal]=useState(false),[cardForm,setCardForm]=useState(emptyCard()),[cardErrors,setCardErrors]=useState({}),[confirmCardId,setConfirmCardId]=useState(null),[purchaseModal,setPurchaseModal]=useState(false),[purchaseForm,setPurchaseForm]=useState(emptyPurchase()),[purchaseErrors,setPurchaseErrors]=useState({}),[confirmPurchaseId,setConfirmPurchaseId]=useState(null),[expandedCard,setExpandedCard]=useState(data.cards[0]?.id||null),[payModal,setPayModal]=useState(null),[payAccount,setPayAccount]=useState(""); const paying=useRef(false); const currentMonth=monthKeyOf(isoToday());
+function Cards({data,setData,quickAction,clearQuickAction}){
+ const toast=useToast(); const [cardModal,setCardModal]=useState(false),[cardForm,setCardForm]=useState(emptyCard()),[cardErrors,setCardErrors]=useState({}),[confirmCardId,setConfirmCardId]=useState(null),[purchaseModal,setPurchaseModal]=useState(false),[purchaseForm,setPurchaseForm]=useState(emptyPurchase()),[purchaseErrors,setPurchaseErrors]=useState({}),[confirmPurchaseId,setConfirmPurchaseId]=useState(null),[expandedCard,setExpandedCard]=useState(data.cards[0]?.id||null),[payModal,setPayModal]=useState(null),[payAccount,setPayAccount]=useState(""); const paying=useRef(false); const currentMonth=getActiveMonth(data);
+ useEffect(() => {
+  if (quickAction === "cardExpense") {
+    openNewPurchase(data.cards[0]?.id || "");
+    clearQuickAction?.();
+  }
+ }, [quickAction]);
  const openNewCard=()=>{setCardForm(emptyCard());setCardErrors({});setCardModal(true)}; const openEditCard=c=>{setCardForm({...c,limit:(safeCents(c.limitCents)/100).toFixed(2).replace(".",",")});setCardErrors({});setCardModal(true)};
  const saveCard=()=>{const e={};if(!safeString(cardForm.name).trim())e.name="Nome obrigatório";if(+cardForm.closingDay<1||+cardForm.closingDay>31)e.closingDay="Dia inválido";if(+cardForm.dueDay<1||+cardForm.dueDay>31)e.dueDay="Dia inválido";setCardErrors(e);if(Object.keys(e).length)return;const c={id:cardForm.id||uid(),name:cardForm.name.trim(),institution:cardForm.institution,limitCents:toCents(cardForm.limit),closingDay:+cardForm.closingDay,dueDay:+cardForm.dueDay,color:cardForm.color,active:true};setData(d=>({...d,cards:cardForm.id?d.cards.map(x=>x.id===cardForm.id?c:x):[...d.cards,c]}));toast(cardForm.id?"Cartão atualizado.":"Cartão adicionado.");setCardModal(false)};
  const removeCard=id=>{setData(d=>({...d,cards:d.cards.filter(c=>c.id!==id),cardPurchases:d.cardPurchases.filter(p=>p.cardId!==id)}));toast("Cartão removido.");setConfirmCardId(null)};
- const openNewPurchase=cardId=>{setPurchaseForm({...emptyPurchase(),cardId});setPurchaseErrors({});setPurchaseModal(true)}; const openEditPurchase=p=>{setPurchaseForm({...p,value:(safeCents(p.valueCents)/100).toFixed(2).replace(".",",")});setPurchaseErrors({});setPurchaseModal(true)};
+ const openNewPurchase=cardId=>{setPurchaseForm({...emptyPurchase(),cardId,date:currentMonth+"-01"});setPurchaseErrors({});setPurchaseModal(true)}; const openEditPurchase=p=>{setPurchaseForm({...p,value:(safeCents(p.valueCents)/100).toFixed(2).replace(".",",")});setPurchaseErrors({});setPurchaseModal(true)};
  const savePurchase=()=>{const e={};if(!safeString(purchaseForm.description).trim())e.description="Descrição obrigatória";if(toCents(purchaseForm.value)<=0)e.value="Valor inválido";if(!purchaseForm.categoryId)e.categoryId="Selecione a categoria";if(+purchaseForm.installments<1)e.installments="Mínimo 1 parcela";setPurchaseErrors(e);if(Object.keys(e).length)return;const valueCents=toCents(purchaseForm.value),n=Math.max(1,+purchaseForm.installments||1),iv=Math.floor(valueCents/n),remainder=valueCents-iv*n;setData(d=>{const item={id:purchaseForm.id||uid(),description:purchaseForm.description.trim(),valueCents,cardId:purchaseForm.cardId,categoryId:purchaseForm.categoryId,date:purchaseForm.date,installments:n,installmentValueCents:iv,note:purchaseForm.note||"",remainderCents:remainder};return {...d,cardPurchases:purchaseForm.id?d.cardPurchases.map(p=>p.id===purchaseForm.id?item:p):[...d.cardPurchases,item]}});toast(purchaseForm.id?"Compra atualizada.":"Compra registrada.");setPurchaseModal(false)};
  const removePurchase=id=>{setData(d=>({...d,cardPurchases:d.cardPurchases.filter(p=>p.id!==id)}));toast("Compra removida.");setConfirmPurchaseId(null)};
  const payInvoice=()=>{if(paying.current||!payModal||!payAccount)return;paying.current=true;setData(d=>{const key=`${payModal.cardId}-${payModal.monthKey}`;if(d.invoicePayments?.[key])return d;const card=d.cards.find(c=>c.id===payModal.cardId);if(!card)return d;const txId=uid();return {...d,transactions:[...d.transactions,{id:txId,description:`Fatura ${card.name} — ${monthLabel(payModal.monthKey)}`,valueCents:payModal.total,type:"expense",categoryId:"cat-cartao",accountId:payAccount,date:isoToday(),status:"paid",note:"Pagamento de fatura",transfer:false,invoicePaymentKey:key}],invoicePayments:{...(d.invoicePayments||{}),[key]:{transactionId:txId,paidDate:isoToday(),accountId:payAccount}}}});setPayModal(null);paying.current=false;toast("Fatura paga.")};
@@ -1837,6 +1938,7 @@ function Goals({ data, setData }) {
 
 function Reports({ data }) {
   const fin = useFinance(data);
+  const activeMonth = getActiveMonth(data);
   const [period, setPeriod] = useState("month");
   const [customStart, setCustomStart] = useState(isoToday().slice(0, 8) + "01");
   const [customEnd, setCustomEnd] = useState(isoToday());
@@ -1845,10 +1947,10 @@ function Reports({ data }) {
     const today = isoToday();
     if (period === "today") return { start: today, end: today };
     if (period === "week") return { start: addMonthsISO(today, 0).slice(0, 10) > today ? today : shiftDays(today, -7), end: today };
-    if (period === "month") return { start: today.slice(0, 8) + "01", end: today };
+    if (period === "month") return { start: activeMonth + "-01", end: monthEndISO(activeMonth) };
     if (period === "year") return { start: today.slice(0, 4) + "-01-01", end: today };
     return { start: customStart, end: customEnd };
-  }, [period, customStart, customEnd]);
+  }, [period, customStart, customEnd, activeMonth]);
 
   const totals = fin.periodTotals(start, end);
 
