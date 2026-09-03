@@ -9,7 +9,7 @@ import {
   Plus, Pencil, Trash2, ArrowUpCircle, ArrowDownCircle, Sun, Moon, Check,
   Eye, EyeOff,
   ChevronRight, ChevronLeft, Wallet, Download, AlertCircle, Search, Filter,
-  ArrowRightLeft, Delete, Divide
+  ArrowRightLeft, Delete, Divide, CalendarDays
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RTooltip, BarChart, Bar,
@@ -154,6 +154,7 @@ function normalizeState(raw) {
     fixedAccounts,
     cardPurchases: Array.isArray(d.cardPurchases) ? d.cardPurchases : [],
     invoicePayments,
+    recurringReceipts: Array.isArray(d.recurringReceipts) ? d.recurringReceipts : [],
     investments: Array.isArray(d.investments) ? d.investments : [],
     goals: Array.isArray(d.goals) ? d.goals : [],
     settings: {
@@ -284,17 +285,17 @@ const DEFAULT_CARDS = [
 
 function seedData() {
   const today = isoToday();
-  const t1 = { id: uid(), description: "Salário", valueCents: 500000, type: "income", categoryId: "cat-salario", accountId: "acc-nubank", date: addMonthsISO(today, 0).slice(0, 8) + "05", status: "paid", note: "", transfer: false };
-  const t2 = { id: uid(), description: "Mercado", valueCents: 65000, type: "expense", categoryId: "cat-alimentacao", accountId: "acc-nubank", date: today, status: "paid", note: "", transfer: false };
-  const t3 = { id: uid(), description: "Internet", valueCents: 12000, type: "expense", categoryId: "cat-casa", accountId: "acc-inter", date: today, status: "paid", note: "", transfer: false };
+  const t1 = { id: uid(), description: "Exemplo de entrada", valueCents: 127500, type: "income", categoryId: "cat-salario", accountId: "acc-nubank", date: today, status: "paid", note: "", transfer: false };
+  const t2 = { id: uid(), description: "Exemplo de mercado", valueCents: 4380, type: "expense", categoryId: "cat-alimentacao", accountId: "acc-nubank", date: today, status: "paid", note: "", transfer: false };
+  const t3 = { id: uid(), description: "Exemplo de internet", valueCents: 8990, type: "expense", categoryId: "cat-casa", accountId: "acc-inter", date: today, status: "paid", note: "", transfer: false };
   return {
     categories: DEFAULT_CATEGORIES,
     accounts: DEFAULT_ACCOUNTS,
     cards: DEFAULT_CARDS,
     transactions: [t1, t2, t3],
     fixedAccounts: [
-      { id: "fixed-aluguel", name: "Aluguel", valueCents: 110000, dueDay: 28, categoryId: "cat-casa", accountId: "acc-nubank", recurrence: "monthly", startDate: today.slice(0,7)+"-01", active: true },
-      { id: "fixed-academia", name: "Academia", valueCents: 9000, dueDay: 15, categoryId: "cat-saude", accountId: "acc-inter", recurrence: "monthly", startDate: today.slice(0,7)+"-01", active: true },
+      { id: "fixed-aluguel", name: "Aluguel", valueCents: 134700, dueDay: 28, categoryId: "cat-casa", accountId: "acc-nubank", recurrence: "monthly", startDate: today.slice(0,7)+"-01", active: true },
+      { id: "fixed-academia", name: "Academia", valueCents: 7990, dueDay: 15, categoryId: "cat-saude", accountId: "acc-inter", recurrence: "monthly", startDate: today.slice(0,7)+"-01", active: true },
     ],
     bills: [],
     cardPurchases: [
@@ -302,14 +303,17 @@ function seedData() {
       { id: uid(), description: "Restaurante", valueCents: 8500, cardId: "card-inter", categoryId: "cat-alimentacao", date: today, installments: 1, installmentValueCents: 8500, note: "" },
     ],
     invoicePayments: {},
+    recurringReceipts: [
+      { id: uid(), name: "Exemplo de recebimento", valueCents: 125000, day: 12, recurrence: "monthly", startDate: today.slice(0,7)+"-01", active: true },
+    ],
     investments: [
-      { id: uid(), name: "Tesouro Selic 2029", category: "Renda fixa", institution: "Tesouro Direto", investedCents: 500000, currentCents: 538000, date: addMonthsISO(today, -6), note: "" },
-      { id: uid(), name: "Bitcoin", category: "Cripto", institution: "Corretora", investedCents: 200000, currentCents: 176000, date: addMonthsISO(today, -3), note: "" },
-      { id: uid(), name: "PETR4", category: "Ações", institution: "Corretora", investedCents: 300000, currentCents: 342000, date: addMonthsISO(today, -8), note: "" },
+      { id: uid(), name: "Tesouro Selic 2029", category: "Renda fixa", institution: "Tesouro Direto", investedCents: 420000, currentCents: 447000, date: addMonthsISO(today, -6), note: "" },
+      { id: uid(), name: "Bitcoin", category: "Cripto", institution: "Corretora", investedCents: 165000, currentCents: 171500, date: addMonthsISO(today, -3), note: "" },
+      { id: uid(), name: "PETR4", category: "Ações", institution: "Corretora", investedCents: 275000, currentCents: 291000, date: addMonthsISO(today, -8), note: "" },
     ],
     goals: [
-      { id: uid(), name: "Comprar carro", targetCents: 3000000, currentCents: 1200000, deadline: addMonthsISO(today, 10), category: "Compras", description: "" },
-      { id: uid(), name: "Reserva de emergência", targetCents: 1500000, currentCents: 900000, deadline: addMonthsISO(today, 6), category: "Finanças", description: "" },
+      { id: uid(), name: "Exemplo de meta", targetCents: 2450000, currentCents: 875000, deadline: addMonthsISO(today, 10), category: "Compras", description: "" },
+      { id: uid(), name: "Exemplo de reserva", targetCents: 1850000, currentCents: 640000, deadline: addMonthsISO(today, 6), category: "Finanças", description: "" },
     ],
     settings: { theme: "dark", activeMonth: today.slice(0, 7), closedMonths: [] },
   };
@@ -334,7 +338,7 @@ async function loadState() {
     if (error) throw error;
     let state = row?.data && typeof row.data === "object" ? row.data : row ? {
       categories: DEFAULT_CATEGORIES, accounts: row.accounts || [], cards: row.cards || [], transactions: row.transactions || [],
-      bills: row.bills || [], fixedAccounts: row.fixedAccounts || [], cardPurchases: row.purchases || [], invoicePayments: row.invoicePayments || {},
+      bills: row.bills || [], fixedAccounts: row.fixedAccounts || [], recurringReceipts: row.recurringReceipts || [], cardPurchases: row.purchases || [], invoicePayments: row.invoicePayments || {},
       investments: row.investments || [], goals: row.goals || [], settings: { theme: row.theme === "light" ? "light" : "dark", activeMonth: row.activeMonth || isoToday().slice(0,7), closedMonths: row.closedMonths || [] }
     } : seedData();
     state = ensureFixedOccurrences(normalizeState(state));
@@ -509,10 +513,9 @@ const ThemeVars = () => (
     .mf-btn-danger:hover { filter: brightness(1.08); }
     .mf-btn:disabled { opacity: .5; cursor: not-allowed; }
     .mf-mobile-bottom { display: none; }
+    .mf-mobile-quick-grid { max-width: 520px; margin: 0 auto; }
     @media (max-width: 899px) {
-      .mf-mobile-bottom { display: grid; width: 100%; }
-      .mf-mobile-bottom > button { min-width: 0; }
-      .mf-mobile-bottom > button span { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .mf-mobile-bottom { display: flex; }
       .mf-main-scroll { padding-bottom: 82px; }
     }
     @keyframes mf-fade-in { from { opacity: 0; transform: translateY(4px);} to { opacity: 1; transform: translateY(0);} }
@@ -520,6 +523,7 @@ const ThemeVars = () => (
     .mf-anim-in { animation: mf-fade-in .2s ease; }
     .mf-anim-pop { animation: mf-pop .15s ease; }
     @media (max-width: 899px) {
+      .mf-main-scroll { padding-bottom: 92px; }
       .mf-sidebar-desktop { display: none !important; }
       .mf-menu-btn { display: flex !important; }
     }
@@ -713,6 +717,7 @@ const NAV = [
   { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { key: "transactions", label: "Transações", icon: ArrowLeftRight },
   { key: "accounts", label: "Contas", icon: Landmark },
+  { key: "planning", label: "Planejamento", icon: CalendarDays },
   { key: "cards", label: "Cartões", icon: CreditCard },
   { key: "investments", label: "Investimentos", icon: TrendingUp },
   { key: "goals", label: "Metas", icon: Target },
@@ -863,6 +868,7 @@ export default function MeuFinanceiro() {
             {tab === "dashboard" && <Dashboard data={data} setData={setData} goTab={setTab} userName={userName} />}
             {tab === "transactions" && <Transactions data={data} setData={setData} quickAction={quickAction} clearQuickAction={() => setQuickAction(null)} />}
             {tab === "accounts" && <Accounts data={data} setData={setData} />}
+            {tab === "planning" && <Planning data={data} setData={setData} />}
             {tab === "cards" && <Cards data={data} setData={setData} quickAction={quickAction} clearQuickAction={() => setQuickAction(null)} />}
             {tab === "investments" && <Investments data={data} setData={setData} />}
             {tab === "goals" && <Goals data={data} setData={setData} />}
@@ -979,51 +985,20 @@ function MobileQuickActions({ tab, setTab, quickAction, setQuickAction }) {
     setQuickAction(type);
     if (type === "income" || type === "expense" || type === "transfer") setTab("transactions");
     if (type === "cardExpense") setTab("cards");
+    if (type === "account") setTab("accounts");
+    if (type === "planning") setTab("planning");
   };
   const items = [
     { key: "income", label: "Receita", icon: ArrowUpCircle, tone: "var(--income)" },
     { key: "cardExpense", label: "Despesa Cartão", icon: CreditCard, tone: "var(--brand-2)" },
     { key: "transfer", label: "Transferência", icon: ArrowRightLeft, tone: "var(--brand-2)" },
     { key: "expense", label: "Despesa", icon: ArrowDownCircle, tone: "var(--expense)" },
+    { key: "account", label: "Conta", icon: Landmark, tone: "var(--brand-2)" },
+    { key: "planning", label: "Planejamento", icon: CalendarDays, tone: "var(--brand-2)" },
   ];
-  const navItem = {
-    width: "100%",
-    minWidth: 0,
-    minHeight: 58,
-    padding: "4px 2px",
-    background: "none",
-    border: 0,
-    color: "var(--text-muted)",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 3,
-    fontSize: 10.5,
-    fontWeight: 700,
-    lineHeight: 1.1,
-    cursor: "pointer",
-    boxSizing: "border-box",
-  };
   return (
-    <div
-      className="mf-mobile-bottom"
-      style={{
-        position: "fixed",
-        left: 0,
-        right: 0,
-        bottom: 0,
-        zIndex: 90,
-        background: "var(--surface)",
-        borderTop: "1px solid var(--border)",
-        padding: "6px 8px max(8px, env(safe-area-inset-bottom))",
-        display: "grid",
-        gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
-        alignItems: "center",
-        boxSizing: "border-box",
-      }}
-    >
-      {open && <div style={{ position: "absolute", left: 0, right: 0, bottom: 72, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, padding: "0 18px" }}>
+    <div className="mf-mobile-bottom" style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 90, background: "var(--surface)", borderTop: "1px solid var(--border)", padding: "8px 14px max(8px, env(safe-area-inset-bottom))", justifyContent: "space-around", alignItems: "center" }}>
+      {open && <div className="mf-mobile-quick-grid" style={{ position: "absolute", left: 0, right: 0, bottom: 72, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, padding: "0 14px", maxHeight: "calc(100vh - 150px)", overflowY: "auto" }}>
         {items.map(({ key, label, icon: Icon, tone }) => (
           <button key={key} className="mf-card mf-focus mf-anim-pop" onClick={() => action(key)} style={{ minHeight: 76, padding: 10, color: "var(--text)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 7 }}>
             <span style={{ width: 38, height: 38, borderRadius: "50%", background: `${tone}22`, color: tone, display: "flex", alignItems: "center", justifyContent: "center" }}><Icon size={19}/></span>
@@ -1031,21 +1006,11 @@ function MobileQuickActions({ tab, setTab, quickAction, setQuickAction }) {
           </button>
         ))}
       </div>}
-      <button className="mf-focus" onClick={() => setTab("dashboard")} style={{ ...navItem, color: tab === "dashboard" ? "var(--brand-2)" : "var(--text-muted)" }}>
-        <LayoutDashboard size={19}/><span>Início</span>
-      </button>
-      <button className="mf-focus" onClick={() => setTab("transactions")} style={{ ...navItem, color: tab === "transactions" ? "var(--brand-2)" : "var(--text-muted)" }}>
-        <ArrowLeftRight size={19}/><span>Transações</span>
-      </button>
-      <button aria-label="Adicionar lançamento" className="mf-focus" onClick={() => setOpen(v => !v)} style={{ width: 62, height: 62, justifySelf: "center", alignSelf: "center", marginTop: -25, borderRadius: "50%", border: "4px solid var(--bg)", background: "var(--brand)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 8px 22px rgba(0,0,0,.25)", boxSizing: "border-box" }}>
-        {open ? <X size={27}/> : <Plus size={28}/>}
-      </button>
-      <button className="mf-focus" onClick={() => setTab("goals")} style={{ ...navItem, color: tab === "goals" ? "var(--brand-2)" : "var(--text-muted)" }}>
-        <Target size={19}/><span>Metas</span>
-      </button>
-      <button className="mf-focus" onClick={() => setTab("settings")} style={{ ...navItem, color: tab === "settings" ? "var(--brand-2)" : "var(--text-muted)" }}>
-        <SettingsIcon size={19}/><span>Mais</span>
-      </button>
+      <button className="mf-focus" onClick={() => setTab("dashboard")} style={{ background: "none", border: 0, color: tab === "dashboard" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><LayoutDashboard size={19}/><span>Início</span></button>
+      <button className="mf-focus" onClick={() => setTab("transactions")} style={{ background: "none", border: 0, color: tab === "transactions" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><ArrowLeftRight size={19}/><span>Transações</span></button>
+      <button aria-label="Adicionar lançamento" className="mf-focus" onClick={() => setOpen(v => !v)} style={{ width: 54, height: 54, marginTop: -26, borderRadius: "50%", border: "4px solid var(--bg)", background: "var(--brand)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 8px 22px rgba(0,0,0,.25)" }}>{open ? <X size={27}/> : <Plus size={28}/>}</button>
+      <button className="mf-focus" onClick={() => setTab("goals")} style={{ background: "none", border: 0, color: tab === "goals" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><Target size={19}/><span>Metas</span></button>
+      <button className="mf-focus" onClick={() => setTab("settings")} style={{ background: "none", border: 0, color: tab === "settings" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><SettingsIcon size={19}/><span>Mais</span></button>
     </div>
   );
 }
@@ -1116,9 +1081,24 @@ function Dashboard({ data, setData, goTab, userName }) {
     .sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1))
     .slice(0, 5);
 
-  const fixedThisMonth = data.bills
+  const fixedOccurrencesThisMonth = data.bills
     .filter((b) => b.fixed && monthKeyOf(b.dueDate) === activeMonth)
     .sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
+
+  // Contas fixas continuam visíveis no Dashboard mesmo quando a primeira
+  // ocorrência ainda não chegou. Nesse caso mostramos o próximo vencimento
+  // sem transformar a conta em uma cobrança do mês atual.
+  const futureFixedThisMonth = (data.fixedAccounts || [])
+    .filter((f) => f.active !== false)
+    .filter((f) => monthKeyOf(f.startDate || isoToday()) > activeMonth)
+    .map((f) => ({
+      ...f,
+      __futureFixed: true,
+      __futureDueDate: dueDateForMonth(monthKeyOf(f.startDate), f.dueDay),
+    }))
+    .sort((a, b) => (a.__futureDueDate > b.__futureDueDate ? 1 : -1));
+
+  const fixedThisMonth = [...fixedOccurrencesThisMonth, ...futureFixedThisMonth];
 
   const toggleBillPayment = (billId) => {
     setData((d) => {
@@ -1222,27 +1202,36 @@ function Dashboard({ data, setData, goTab, userName }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }} className="mf-grid-2">
         <div className="mf-card" style={{ padding: 18 }}>
-          <SectionTitle title="Contas fixas do mês" subtitle={`${fixedThisMonth.length} ocorrência(s) · ${monthLabel(activeMonth)}`} action={<LinkBtn onClick={() => goTab("accounts")}>Ver contas</LinkBtn>} />
+          <SectionTitle title="Contas fixas" subtitle={`${fixedThisMonth.length} item(ns) · referência ${monthLabel(activeMonth)}`} action={<LinkBtn onClick={() => goTab("accounts")}>Ver contas</LinkBtn>} />
           {fixedThisMonth.length === 0 ? (
             <EmptyState icon={Landmark} title="Nenhuma conta fixa" description="Cadastre aluguel, internet, luz e outras recorrências." />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {fixedThisMonth.map((b) => (
-                <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid var(--border)", flexWrap: "wrap" }}>
-                  <div style={{ flex: 1, minWidth: 130 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{b.name}</div>
-                    <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>vence {fmtDateBR(b.dueDate)} · {b.status === "paid" ? "Paga" : "Pendente"}</div>
+              {fixedThisMonth.map((b) => {
+                const isFuture = !!b.__futureFixed;
+                return (
+                  <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid var(--border)", flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 130 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13.5 }}>{b.name}</div>
+                      <div style={{ fontSize: 11.5, color: isFuture ? "var(--brand-2)" : "var(--text-faint)" }}>
+                        {isFuture
+                          ? `Próximo vencimento · ${fmtDateBR(b.__futureDueDate)}`
+                          : `vence ${fmtDateBR(b.dueDate)} · ${b.status === "paid" ? "Paga" : "Pendente"}`}
+                      </div>
+                    </div>
+                    <Money cents={isFuture ? b.valueCents : b.valueCents} weight={700} />
+                    {!isFuture && (
+                      <button
+                        className={`mf-btn ${b.status === "paid" ? "mf-btn-ghost" : "mf-btn-primary"} mf-focus`}
+                        style={{ padding: "6px 9px", fontSize: 11.5 }}
+                        onClick={() => toggleBillPayment(b.id)}
+                      >
+                        {b.status === "paid" ? "Marcar como pendente" : "Marcar como paga"}
+                      </button>
+                    )}
                   </div>
-                  <Money cents={b.valueCents} weight={700} />
-                  <button
-                    className={`mf-btn ${b.status === "paid" ? "mf-btn-ghost" : "mf-btn-primary"} mf-focus`}
-                    style={{ padding: "6px 9px", fontSize: 11.5 }}
-                    onClick={() => toggleBillPayment(b.id)}
-                  >
-                    {b.status === "paid" ? "Marcar como pendente" : "Marcar como paga"}
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -1273,7 +1262,7 @@ function Dashboard({ data, setData, goTab, userName }) {
           </div>
         )}
       </div>
-      <style>{`@media (max-width: 760px) { .mf-grid-2 { grid-template-columns: 1fr !important; } }`}</style>
+      <style>{`@media (max-width: 760px) { .mf-grid-2 { grid-template-columns: 1fr !important; } .mf-card { max-width: 100%; } }`}</style>
     </div>
   );
 }
@@ -1343,7 +1332,11 @@ function Transactions({ data, setData, quickAction, clearQuickAction }) {
   const toast = useToast(); const fin = useFinance(data);
   const activeMonth = getActiveMonth(data);
   const [modal, setModal] = useState(false), [form, setForm] = useState(emptyTx()), [errors, setErrors] = useState({}), [confirmId, setConfirmId] = useState(null), [search, setSearch] = useState(""), [filterType, setFilterType] = useState("all"), [sortDesc, setSortDesc] = useState(true), [transferModal, setTransferModal] = useState(false);
-  const openNew = (type = "expense") => { setForm({ ...emptyTx(), type, date: activeMonth + "-01" }); setErrors({}); setModal(true); };
+  const openNew = (type = "expense") => {
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    setForm({ ...emptyTx(), type, date: activeMonth + "-01", accountId: accounts.length === 1 ? accounts[0].id : "" });
+    setErrors({}); setModal(true);
+  };
   useEffect(() => {
     if (!quickAction) return;
     if (quickAction === "income" || quickAction === "expense") openNew(quickAction);
@@ -1361,7 +1354,7 @@ function Transactions({ data, setData, quickAction, clearQuickAction }) {
   return <div className="mf-anim-in">
     <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:16, alignItems:"center" }}><div style={{position:"relative",flex:"1 1 200px",minWidth:160}}><Search size={15} style={{position:"absolute",left:11,top:11,color:"var(--text-faint)"}}/><input className="mf-input" style={{paddingLeft:34}} placeholder="Pesquisar transações…" value={search} onChange={(e)=>setSearch(e.target.value)}/></div><SegTabs value={filterType} onChange={setFilterType} options={[{value:"all",label:"Todas"},{value:"income",label:"Entradas"},{value:"expense",label:"Saídas"}]}/><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setSortDesc(s=>!s)}><Filter size={14}/> {sortDesc?"Mais recentes":"Mais antigas"}</button><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setTransferModal(true)}><ArrowRightLeft size={14}/> Transferir</button><button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={15}/> Nova transação</button></div>
     {list.length===0?<EmptyState icon={ArrowLeftRight} title="Nenhuma transação encontrada" description="Adicione uma transação ou ajuste os filtros de pesquisa." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14}/> Nova transação</button>}/>:<div className="mf-card" style={{overflow:"hidden"}}>{list.map((t,idx)=>{const cat=fin.categoryOf(t.categoryId),acc=data.accounts.find(a=>a.id===t.accountId);return <div key={t.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderTop:idx===0?"none":"1px solid var(--border)"}}><IconBadge icon={cat?.icon||"💸"} color={cat?.color||"#888"}/><div style={{flex:1,minWidth:0}}><div style={{fontWeight:600,fontSize:13.5}}>{t.description}</div><div style={{fontSize:11.5,color:"var(--text-faint)"}}>{fmtDateBR(t.date)} · {cat?.name||"—"} · {acc?.name||"—"}</div></div><Money cents={t.type==="income"?t.valueCents:-t.valueCents} sign weight={700} size={14}/><div style={{display:"flex",gap:4}}><IconBtn onClick={()=>openEdit(t)}><Pencil size={14}/></IconBtn><IconBtn onClick={()=>setConfirmId(t.id)} danger><Trash2 size={14}/></IconBtn></div></div>})}</div>}
-    <Modal open={modal} onClose={()=>setModal(false)} title={form.id?"Editar transação":"Nova transação"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button></>}><SegTabs value={form.type} onChange={v=>setForm(f=>({...f,type:v}))} options={[{value:"expense",label:"Saída"},{value:"income",label:"Entrada"}]}/><div style={{height:14}}/><Field label="Descrição"><input className="mf-input" value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Ex: Mercado, Salário…"/>{errors.description&&<ErrorText>{errors.description}</ErrorText>}</Field><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Valor (R$)"><input className="mf-input" inputMode="decimal" value={form.value} onChange={e=>setForm(f=>({...f,value:e.target.value}))} placeholder="0,00"/>{errors.value&&<ErrorText>{errors.value}</ErrorText>}</Field><Field label="Data"><input className="mf-input" type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>{errors.date&&<ErrorText>{errors.date}</ErrorText>}</Field></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Categoria"><select className="mf-input" value={form.categoryId} onChange={e=>setForm(f=>({...f,categoryId:e.target.value}))}><option value="">Selecione…</option>{data.categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}</select>{errors.categoryId&&<ErrorText>{errors.categoryId}</ErrorText>}</Field><Field label="Conta"><select className="mf-input" value={form.accountId} onChange={e=>setForm(f=>({...f,accountId:e.target.value}))}><option value="">Selecione…</option>{data.accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select>{errors.accountId&&<ErrorText>{errors.accountId}</ErrorText>}</Field></div><Field label="Observação (opcional)"><input className="mf-input" value={form.note||""} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/></Field></Modal>
+    <Modal open={modal} onClose={()=>setModal(false)} title={form.id?"Editar transação":"Nova transação"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button></>}><SegTabs value={form.type} onChange={v=>setForm(f=>({...f,type:v}))} options={[{value:"expense",label:"Saída"},{value:"income",label:"Entrada"}]}/><div style={{height:14}}/><Field label="Descrição"><input className="mf-input" value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Ex: Mercado, Salário…"/>{errors.description&&<ErrorText>{errors.description}</ErrorText>}</Field><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Valor (R$)"><input className="mf-input" inputMode="decimal" value={form.value} onChange={e=>setForm(f=>({...f,value:e.target.value}))} placeholder="0,00"/>{errors.value&&<ErrorText>{errors.value}</ErrorText>}</Field><Field label="Data"><input className="mf-input" type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>{errors.date&&<ErrorText>{errors.date}</ErrorText>}</Field></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Categoria"><select className="mf-input" value={form.categoryId} onChange={e=>setForm(f=>({...f,categoryId:e.target.value}))}><option value="">Selecione…</option>{data.categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}</select>{errors.categoryId&&<ErrorText>{errors.categoryId}</ErrorText>}</Field><Field label={data.accounts.length === 1 ? "Conta" : "Conta (onde aconteceu)"}><select className="mf-input" value={form.accountId} onChange={e=>setForm(f=>({...f,accountId:e.target.value}))}><option value="">{data.accounts.length ? "Selecione…" : "Cadastre uma conta primeiro"}</option>{data.accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select>{data.accounts.length > 1 && <div style={{fontSize:11.5,color:"var(--text-faint)",marginTop:5}}>Escolha em qual conta o dinheiro entrou ou saiu.</div>}{errors.accountId&&<ErrorText>{errors.accountId}</ErrorText>}</Field></div><Field label="Observação (opcional)"><input className="mf-input" value={form.note||""} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/></Field></Modal>
     <TransferModal open={transferModal} onClose={()=>setTransferModal(false)} data={data} setData={setData} toast={toast}/><ConfirmDialog open={!!confirmId} title="Excluir transação" message={`Excluir "${data.transactions.find(t=>t.id===confirmId)?.description||""}"? Essa ação não pode ser desfeita.`} onCancel={()=>setConfirmId(null)} onConfirm={()=>remove(confirmId)}/>
   </div>;
 }
@@ -1653,20 +1646,22 @@ function FixedAccounts({ data, setData }) {
     {rows.length === 0 ? <EmptyState icon={Landmark} title="Nenhuma conta fixa" description="Cadastre modelos recorrentes como aluguel, internet e luz." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14} /> Nova conta fixa</button>} /> :
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {rows.map(f => {
-          const occ = data.bills.find(b => b.fixedAccountId === f.id && b.occurrenceKey === occurrenceKey(f.id, month));
+          const startMonth = monthKeyOf(f.startDate || isoToday());
+          const beforeStart = month < startMonth;
+          const occ = beforeStart ? null : data.bills.find(b => b.fixedAccountId === f.id && b.occurrenceKey === occurrenceKey(f.id, month));
           const paid = occ?.status === "paid";
           return <div key={f.id} className="mf-card" style={{ padding: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <IconBadge icon="🔁" color="var(--brand-2)" />
             <div style={{ flex: 1, minWidth: 200 }}>
               <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 {f.name}
-                <Badge color={paid ? "var(--income)" : "var(--text-faint)"}>{paid ? "Paga" : "Pendente"}</Badge>
+                <Badge color={beforeStart ? "var(--brand-2)" : paid ? "var(--income)" : "var(--text-faint)"}>{beforeStart ? "Começa em breve" : paid ? "Paga" : "Pendente"}</Badge>
                 <Badge color={f.active ? "var(--brand-2)" : "var(--text-faint)"}>{f.active ? "Recorrência ativa" : "Recorrência pausada"}</Badge>
               </div>
-              <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 3 }}>R$ {(safeCents(f.valueCents) / 100).toFixed(2).replace(".", ",")} · todo dia {f.dueDay} · competência {monthLabel(month)}</div>
+              <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 3 }}>R$ {(safeCents(f.valueCents) / 100).toFixed(2).replace(".", ",")} · todo dia {f.dueDay} · {beforeStart ? `começa em ${fmtDateBR(f.startDate)}` : `competência ${monthLabel(month)}`}</div>
             </div>
             <Money cents={f.valueCents} weight={700} />
-            {f.active && <button className={`mf-btn ${paid ? "mf-btn-ghost" : "mf-btn-primary"} mf-focus`} style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => toggleOccurrence(f.id)}>{paid ? "Marcar como pendente" : "Marcar como paga"}</button>}
+            {f.active && !beforeStart && <button className={`mf-btn ${paid ? "mf-btn-ghost" : "mf-btn-primary"} mf-focus`} style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => toggleOccurrence(f.id)}>{paid ? "Marcar como pendente" : "Marcar como paga"}</button>}
             <button className="mf-btn mf-btn-ghost mf-focus" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => toggleActive(f)}>{f.active ? "Pausar recorrência" : "Ativar recorrência"}</button>
             <IconBtn onClick={() => openEdit(f)}><Pencil size={13} /></IconBtn>
             <IconBtn onClick={() => setConfirmId(f.id)} danger><Trash2 size={13} /></IconBtn>
@@ -1693,10 +1688,130 @@ function FixedAccounts({ data, setData }) {
   </div>;
 }
 
+/* =========================================================================
+   PLANEJAMENTO — recebimentos previstos e compromissos
+   ========================================================================= */
+
+function emptyReceipt() {
+  return { id: null, name: "", value: "", day: 1, recurrence: "monthly", startDate: isoToday(), active: true };
+}
+
+function Planning({ data, setData }) {
+  const toast = useToast();
+  const month = getActiveMonth(data);
+  const [modal, setModal] = useState(false);
+  const [form, setForm] = useState(emptyReceipt());
+  const [errors, setErrors] = useState({});
+  const [confirmId, setConfirmId] = useState(null);
+
+  const receipts = Array.isArray(data.recurringReceipts) ? data.recurringReceipts : [];
+  const monthStart = month + "-01";
+  const monthEnd = monthEndISO(month);
+
+  const upcomingReceipts = useMemo(() => receipts
+    .filter(r => r.active !== false && monthKeyOf(r.startDate || monthStart) <= month)
+    .filter(r => r.recurrence !== "yearly" || (r.startDate || monthStart).slice(5) === month.slice(5))
+    .map(r => ({ ...r, date: dueDateForMonth(month, r.day) }))
+    .sort((a,b) => a.date < b.date ? -1 : 1), [receipts, month]);
+
+  const upcomingBills = useMemo(() => (data.bills || [])
+    .filter(b => monthKeyOf(b.dueDate) === month && b.status === "pending")
+    .sort((a,b) => a.dueDate < b.dueDate ? -1 : 1), [data.bills, month]);
+
+  const openNew = () => {
+    setForm({ ...emptyReceipt(), day: 15, value: "" });
+    setErrors({});
+    setModal(true);
+  };
+  const openEdit = r => {
+    setForm({ ...r, value: (safeCents(r.valueCents) / 100).toFixed(2).replace(".", ",") });
+    setErrors({});
+    setModal(true);
+  };
+  const save = () => {
+    const e = {};
+    if (!safeString(form.name).trim()) e.name = "Nome obrigatório";
+    if (toCents(form.value) <= 0) e.value = "Valor inválido";
+    if (+form.day < 1 || +form.day > 31) e.day = "Dia inválido";
+    if (!form.startDate) e.startDate = "Data inicial obrigatória";
+    setErrors(e);
+    if (Object.keys(e).length) return;
+    const receipt = {
+      id: form.id || uid(),
+      name: form.name.trim(),
+      valueCents: toCents(form.value),
+      day: +form.day,
+      recurrence: form.recurrence === "yearly" ? "yearly" : "monthly",
+      startDate: form.startDate,
+      active: form.active !== false,
+    };
+    setData(d => ({ ...d, recurringReceipts: form.id
+      ? (d.recurringReceipts || []).map(r => r.id === form.id ? receipt : r)
+      : [...(d.recurringReceipts || []), receipt]
+    }));
+    toast(form.id ? "Recebimento atualizado." : "Recebimento planejado.");
+    setModal(false);
+  };
+  const toggle = r => {
+    setData(d => ({ ...d, recurringReceipts: (d.recurringReceipts || []).map(x => x.id === r.id ? { ...x, active: !x.active } : x) }));
+    toast(r.active === false ? "Recebimento ativado." : "Recebimento pausado.");
+  };
+  const remove = id => {
+    setData(d => ({ ...d, recurringReceipts: (d.recurringReceipts || []).filter(r => r.id !== id) }));
+    toast("Recebimento removido.");
+    setConfirmId(null);
+  };
+
+  return (
+    <div className="mf-anim-in">
+      <div className="mf-card" style={{ padding: 18, marginBottom: 14 }}>
+        <SectionTitle title={`Planejamento · ${fullMonthLabel(month)}`} subtitle="Cadastre quando o dinheiro costuma entrar. Isso é uma previsão e não altera o saldo nem cria uma transação automaticamente." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={15}/> Novo recebimento</button>} />
+        {upcomingReceipts.length === 0 ? <EmptyState icon={ArrowUpCircle} title="Nenhum recebimento planejado" description="Cadastre salário, vale, comissão ou outra entrada recorrente." /> : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+            {upcomingReceipts.map(r => (
+              <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderTop: "1px solid var(--border)", flexWrap: "wrap" }}>
+                <IconBadge icon="💰" color="var(--income)" />
+                <div style={{ flex: 1, minWidth: 150 }}><div style={{ fontWeight: 700 }}>{r.name}</div><div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>previsto para {fmtDateBR(r.date)} · {r.recurrence === "yearly" ? "anual" : "mensal"}</div></div>
+                <Money cents={r.valueCents} weight={700} />
+                <IconBtn onClick={() => openEdit(r)}><Pencil size={13}/></IconBtn>
+                <IconBtn onClick={() => toggle(r)}><Check size={13}/></IconBtn>
+                <IconBtn onClick={() => setConfirmId(r.id)} danger><Trash2 size={13}/></IconBtn>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mf-card" style={{ padding: 18 }}>
+        <SectionTitle title="Contas previstas" subtitle="As contas fixas continuam recorrentes e as demais pertencem somente ao mês em que foram lançadas." />
+        {upcomingBills.length === 0 ? <EmptyState icon={Landmark} title="Nenhuma conta pendente" description="As contas do mês aparecem aqui sem serem duplicadas." /> : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+            {upcomingBills.map(b => <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderTop: "1px solid var(--border)" }}><IconBadge icon="📅" color="var(--expense)"/><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700}}>{b.name}</div><div style={{fontSize:11.5,color:"var(--text-faint)"}}>vence {fmtDateBR(b.dueDate)}{b.fixed ? " · fixa" : ""}</div></div><Money cents={b.valueCents} weight={700}/></div>)}
+          </div>
+        )}
+      </div>
+
+      <Modal open={modal} onClose={() => setModal(false)} title={form.id ? "Editar recebimento" : "Novo recebimento"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={() => setModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button></>}>
+        <Field label="Nome"><input className="mf-input" value={form.name} onChange={e => setForm(f => ({...f,name:e.target.value}))} placeholder="Ex: Salário" />{errors.name && <ErrorText>{errors.name}</ErrorText>}</Field>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <Field label="Valor previsto (R$)"><input className="mf-input" inputMode="decimal" value={form.value} onChange={e => setForm(f => ({...f,value:e.target.value}))} placeholder="1.250,00" />{errors.value && <ErrorText>{errors.value}</ErrorText>}</Field>
+          <Field label="Dia do recebimento"><input className="mf-input" type="number" min="1" max="31" value={form.day} onChange={e => setForm(f => ({...f,day:e.target.value}))} />{errors.day && <ErrorText>{errors.day}</ErrorText>}</Field>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <Field label="Recorrência"><select className="mf-input" value={form.recurrence} onChange={e => setForm(f => ({...f,recurrence:e.target.value}))}><option value="monthly">Mensal</option><option value="yearly">Anual</option></select></Field>
+          <Field label="Começar em"><input className="mf-input" type="date" value={form.startDate} onChange={e => setForm(f => ({...f,startDate:e.target.value}))}/>{errors.startDate && <ErrorText>{errors.startDate}</ErrorText>}</Field>
+        </div>
+        <div style={{fontSize:12,color:"var(--text-faint)"}}>Exemplo: você pode cadastrar um recebimento para o dia 12 e outro para o dia 27. Eles ficam como previsão e só viram entrada quando você registrar a transação de fato.</div>
+      </Modal>
+      <ConfirmDialog open={!!confirmId} title="Excluir recebimento" message={`Excluir "${receipts.find(r => r.id === confirmId)?.name || ""}" do planejamento?`} onCancel={() => setConfirmId(null)} onConfirm={() => remove(confirmId)} />
+    </div>
+  );
+}
+
 function invoiceMonthFor(purchaseDateISO, closingDay, offset) { const d=parseISO(purchaseDateISO); let base=new Date(d.getFullYear(),d.getMonth(),1); if(d.getDate()>Number(closingDay)) base=new Date(base.getFullYear(),base.getMonth()+1,1); const target=new Date(base.getFullYear(),base.getMonth()+offset,1); return target.getFullYear()+"-"+String(target.getMonth()+1).padStart(2,"0"); }
 function computeInvoices(card,purchases){const map={};for(const p of purchases.filter(p=>p.cardId===card.id)){const installments=Math.max(1,Number(p.installments)||1);for(let k=0;k<installments;k++){const mk=invoiceMonthFor(p.date,card.closingDay,k);if(!map[mk])map[mk]={total:0,items:[]};map[mk].total+=safeCents(p.installmentValueCents);map[mk].items.push({purchase:p,n:k+1});}}return map;}
 function emptyCard(){return{id:null,name:"",institution:"",limit:"",closingDay:10,dueDay:17,color:ACCOUNT_COLORS[0],active:true};} function emptyPurchase(){return{id:null,description:"",value:"",cardId:"",categoryId:"",date:isoToday(),installments:1,note:""};}
-function Cards({data,setData}){
+function Cards({data,setData,quickAction,clearQuickAction}){
  const toast=useToast(); const [cardModal,setCardModal]=useState(false),[cardForm,setCardForm]=useState(emptyCard()),[cardErrors,setCardErrors]=useState({}),[confirmCardId,setConfirmCardId]=useState(null),[purchaseModal,setPurchaseModal]=useState(false),[purchaseForm,setPurchaseForm]=useState(emptyPurchase()),[purchaseErrors,setPurchaseErrors]=useState({}),[confirmPurchaseId,setConfirmPurchaseId]=useState(null),[expandedCard,setExpandedCard]=useState(data.cards[0]?.id||null),[payModal,setPayModal]=useState(null),[payAccount,setPayAccount]=useState(""); const paying=useRef(false); const currentMonth=getActiveMonth(data);
  useEffect(() => {
   if (quickAction === "cardExpense") {
@@ -1985,6 +2100,7 @@ function Goals({ data, setData }) {
 
 function Reports({ data }) {
   const fin = useFinance(data);
+  const activeMonth = getActiveMonth(data);
   const [period, setPeriod] = useState("month");
   const [customStart, setCustomStart] = useState(isoToday().slice(0, 8) + "01");
   const [customEnd, setCustomEnd] = useState(isoToday());
@@ -1993,10 +2109,10 @@ function Reports({ data }) {
     const today = isoToday();
     if (period === "today") return { start: today, end: today };
     if (period === "week") return { start: addMonthsISO(today, 0).slice(0, 10) > today ? today : shiftDays(today, -7), end: today };
-    if (period === "month") return { start: today.slice(0, 8) + "01", end: today };
+    if (period === "month") return { start: activeMonth + "-01", end: monthEndISO(activeMonth) };
     if (period === "year") return { start: today.slice(0, 4) + "-01-01", end: today };
     return { start: customStart, end: customEnd };
-  }, [period, customStart, customEnd]);
+  }, [period, customStart, customEnd, activeMonth]);
 
   const totals = fin.periodTotals(start, end);
 
@@ -2151,7 +2267,7 @@ function Reports({ data }) {
           ))}
         </div>
       </div>
-      <style>{`@media (max-width: 760px) { .mf-grid-2 { grid-template-columns: 1fr !important; } }`}</style>
+      <style>{`@media (max-width: 760px) { .mf-grid-2 { grid-template-columns: 1fr !important; } .mf-card { max-width: 100%; } }`}</style>
     </div>
   );
 }
@@ -2478,6 +2594,7 @@ function emptyData(theme = "dark") {
     bills: [],
     cardPurchases: [],
     invoicePayments: {},
+    recurringReceipts: [],
     investments: [],
     goals: [],
     settings: { theme, activeMonth: isoToday().slice(0, 7), closedMonths: [] },
