@@ -510,7 +510,9 @@ const ThemeVars = () => (
     .mf-btn:disabled { opacity: .5; cursor: not-allowed; }
     .mf-mobile-bottom { display: none; }
     @media (max-width: 899px) {
-      .mf-mobile-bottom { display: flex; }
+      .mf-mobile-bottom { display: grid; width: 100%; }
+      .mf-mobile-bottom > button { min-width: 0; }
+      .mf-mobile-bottom > button span { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .mf-main-scroll { padding-bottom: 82px; }
     }
     @keyframes mf-fade-in { from { opacity: 0; transform: translateY(4px);} to { opacity: 1; transform: translateY(0);} }
@@ -984,8 +986,43 @@ function MobileQuickActions({ tab, setTab, quickAction, setQuickAction }) {
     { key: "transfer", label: "Transferência", icon: ArrowRightLeft, tone: "var(--brand-2)" },
     { key: "expense", label: "Despesa", icon: ArrowDownCircle, tone: "var(--expense)" },
   ];
+  const navItem = {
+    width: "100%",
+    minWidth: 0,
+    minHeight: 58,
+    padding: "4px 2px",
+    background: "none",
+    border: 0,
+    color: "var(--text-muted)",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 3,
+    fontSize: 10.5,
+    fontWeight: 700,
+    lineHeight: 1.1,
+    cursor: "pointer",
+    boxSizing: "border-box",
+  };
   return (
-    <div className="mf-mobile-bottom" style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 90, background: "var(--surface)", borderTop: "1px solid var(--border)", padding: "8px 14px max(8px, env(safe-area-inset-bottom))", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", alignItems: "center", justifyItems: "center" }}>
+    <div
+      className="mf-mobile-bottom"
+      style={{
+        position: "fixed",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 90,
+        background: "var(--surface)",
+        borderTop: "1px solid var(--border)",
+        padding: "6px 8px max(8px, env(safe-area-inset-bottom))",
+        display: "grid",
+        gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+        alignItems: "center",
+        boxSizing: "border-box",
+      }}
+    >
       {open && <div style={{ position: "absolute", left: 0, right: 0, bottom: 72, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, padding: "0 18px" }}>
         {items.map(({ key, label, icon: Icon, tone }) => (
           <button key={key} className="mf-card mf-focus mf-anim-pop" onClick={() => action(key)} style={{ minHeight: 76, padding: 10, color: "var(--text)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 7 }}>
@@ -994,11 +1031,21 @@ function MobileQuickActions({ tab, setTab, quickAction, setQuickAction }) {
           </button>
         ))}
       </div>}
-      <button className="mf-focus" onClick={() => setTab("dashboard")} style={{ background: "none", border: 0, color: tab === "dashboard" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><LayoutDashboard size={19}/><span>Início</span></button>
-      <button className="mf-focus" onClick={() => setTab("transactions")} style={{ background: "none", border: 0, color: tab === "transactions" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><ArrowLeftRight size={19}/><span>Transações</span></button>
-      <button aria-label="Adicionar lançamento" className="mf-focus" onClick={() => setOpen(v => !v)} style={{ width: 58, height: 58, marginTop: -28, padding: 0, borderRadius: "50%", border: "4px solid var(--bg)", background: "var(--brand)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", justifySelf: "center", alignSelf: "center", cursor: "pointer", boxShadow: "0 8px 22px rgba(0,0,0,.25)" }}>{open ? <X size={27}/> : <Plus size={28}/>}</button>
-      <button className="mf-focus" onClick={() => setTab("goals")} style={{ background: "none", border: 0, color: tab === "goals" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><Target size={19}/><span>Metas</span></button>
-      <button className="mf-focus" onClick={() => setTab("settings")} style={{ background: "none", border: 0, color: tab === "settings" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><SettingsIcon size={19}/><span>Mais</span></button>
+      <button className="mf-focus" onClick={() => setTab("dashboard")} style={{ ...navItem, color: tab === "dashboard" ? "var(--brand-2)" : "var(--text-muted)" }}>
+        <LayoutDashboard size={19}/><span>Início</span>
+      </button>
+      <button className="mf-focus" onClick={() => setTab("transactions")} style={{ ...navItem, color: tab === "transactions" ? "var(--brand-2)" : "var(--text-muted)" }}>
+        <ArrowLeftRight size={19}/><span>Transações</span>
+      </button>
+      <button aria-label="Adicionar lançamento" className="mf-focus" onClick={() => setOpen(v => !v)} style={{ width: 62, height: 62, justifySelf: "center", alignSelf: "center", marginTop: -25, borderRadius: "50%", border: "4px solid var(--bg)", background: "var(--brand)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 8px 22px rgba(0,0,0,.25)", boxSizing: "border-box" }}>
+        {open ? <X size={27}/> : <Plus size={28}/>}
+      </button>
+      <button className="mf-focus" onClick={() => setTab("goals")} style={{ ...navItem, color: tab === "goals" ? "var(--brand-2)" : "var(--text-muted)" }}>
+        <Target size={19}/><span>Metas</span>
+      </button>
+      <button className="mf-focus" onClick={() => setTab("settings")} style={{ ...navItem, color: tab === "settings" ? "var(--brand-2)" : "var(--text-muted)" }}>
+        <SettingsIcon size={19}/><span>Mais</span>
+      </button>
     </div>
   );
 }
