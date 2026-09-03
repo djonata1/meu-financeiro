@@ -167,35 +167,17 @@ function normalizeState(raw) {
 
 function ensureFixedOccurrences(state, monthKey = isoToday().slice(0, 7)) {
   const next = normalizeState(state);
-
-  // Remove ocorrências geradas para meses anteriores ao "Começar em".
-  // Isso evita que uma conta cadastrada para 05/10 continue aparecendo
-  // no dashboard de setembro por causa de uma ocorrência antiga.
-  const fixedById = new Map((next.fixedAccounts || []).map((f) => [f.id, f]));
-  const bills = next.bills.filter((b) => {
-    if (!b.fixed || !b.fixedAccountId) return true;
-    const f = fixedById.get(b.fixedAccountId);
-    if (!f) return true;
-    return monthKeyOf(b.dueDate) >= monthKeyOf(f.startDate || b.dueDate);
-  });
-
+  const bills = [...next.bills];
   const existing = new Set(
     bills.filter((b) => b.fixed && b.occurrenceKey).map((b) => b.occurrenceKey)
   );
 
   for (const f of next.fixedAccounts || []) {
     if (f.active === false) continue;
-    const startDate = safeString(f.startDate || isoToday());
-    const startMonth = monthKeyOf(startDate);
-
-    // "Começar em" é a primeira cobrança real.
-    // Ex.: começar em 05/10 + vencimento dia 5:
-    // setembro não recebe ocorrência; outubro recebe 05/10.
+    const startMonth = monthKeyOf(f.startDate || isoToday());
     if (monthKey < startMonth) continue;
     if (f.recurrence === "yearly" && monthKey.slice(5) !== startMonth.slice(5)) continue;
 
-    const startDay = Number(startDate.slice(8, 10)) || Number(f.dueDay) || 1;
-    const occurrenceDay = monthKey === startMonth ? startDay : Number(f.dueDay) || 1;
     const key = occurrenceKey(f.id, monthKey);
     if (existing.has(key)) continue;
 
@@ -203,7 +185,7 @@ function ensureFixedOccurrences(state, monthKey = isoToday().slice(0, 7)) {
       id: uid(),
       name: f.name,
       valueCents: safeCents(f.valueCents),
-      dueDate: dueDateForMonth(monthKey, occurrenceDay),
+      dueDate: dueDateForMonth(monthKey, f.dueDay),
       categoryId: f.categoryId,
       accountId: f.accountId,
       status: "pending",
@@ -343,7 +325,8 @@ function seedData() {
 
 async function loadState() {
   try {
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    const { data: { session }, error: userError } = await supabase.auth.getSession();
+    const user = session?.user;
     if (userError || !user) { if (typeof window !== "undefined") window.location.href = "/login"; return null; }
     const userCacheKey = `${LOCAL_CACHE_KEY}:${user.id}`;
     if (typeof window !== "undefined") {
@@ -1024,11 +1007,11 @@ function MobileQuickActions({ tab, setTab, quickAction, setQuickAction }) {
           </button>
         ))}
       </div>}
-      <button className="mf-focus" onClick={() => setTab("dashboard")} style={{ width: "100%", background: "none", border: 0, color: tab === "dashboard" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><LayoutDashboard size={19}/><span>Início</span></button>
-      <button className="mf-focus" onClick={() => setTab("transactions")} style={{ width: "100%", background: "none", border: 0, color: tab === "transactions" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><ArrowLeftRight size={19}/><span>Transações</span></button>
+      <button className="mf-focus" onClick={() => setTab("dashboard")} style={{ background: "none", border: 0, color: tab === "dashboard" ? "var(--brand-2)" : "var(--text-muted)", width: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><LayoutDashboard size={19}/><span>Início</span></button>
+      <button className="mf-focus" onClick={() => setTab("transactions")} style={{ background: "none", border: 0, color: tab === "transactions" ? "var(--brand-2)" : "var(--text-muted)", width: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><ArrowLeftRight size={19}/><span>Transações</span></button>
       <button aria-label="Adicionar lançamento" className="mf-focus" onClick={() => setOpen(v => !v)} style={{ width: 54, height: 54, marginTop: -26, justifySelf: "center", borderRadius: "50%", border: "4px solid var(--bg)", background: "var(--brand)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 8px 22px rgba(0,0,0,.25)" }}>{open ? <X size={27}/> : <Plus size={28}/>}</button>
-      <button className="mf-focus" onClick={() => setTab("goals")} style={{ width: "100%", background: "none", border: 0, color: tab === "goals" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><Target size={19}/><span>Metas</span></button>
-      <button className="mf-focus" onClick={() => setTab("settings")} style={{ width: "100%", background: "none", border: 0, color: tab === "settings" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><SettingsIcon size={19}/><span>Mais</span></button>
+      <button className="mf-focus" onClick={() => setTab("goals")} style={{ background: "none", border: 0, color: tab === "goals" ? "var(--brand-2)" : "var(--text-muted)", width: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><Target size={19}/><span>Metas</span></button>
+      <button className="mf-focus" onClick={() => setTab("settings")} style={{ background: "none", border: 0, color: tab === "settings" ? "var(--brand-2)" : "var(--text-muted)", width: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><SettingsIcon size={19}/><span>Mais</span></button>
     </div>
   );
 }
@@ -1099,9 +1082,35 @@ function Dashboard({ data, setData, goTab, userName }) {
     .sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1))
     .slice(0, 5);
 
-  const fixedThisMonth = data.bills
-    .filter((b) => b.fixed && monthKeyOf(b.dueDate) === activeMonth)
-    .sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
+  // Contas fixas são modelos permanentes. No Dashboard elas continuam
+  // visíveis em qualquer mês; quando a primeira ocorrência ainda não começou,
+  // mostramos o próximo vencimento sem criar uma cobrança antecipada.
+  const fixedThisMonth = (data.fixedAccounts || [])
+    .filter((f) => f.active !== false)
+    .map((f) => {
+      const startDate = f.startDate || isoToday();
+      const startMonth = monthKeyOf(startDate);
+      const occurrence = data.bills.find(
+        (b) => b.fixedAccountId === f.id && b.occurrenceKey === occurrenceKey(f.id, activeMonth)
+      );
+      const beforeStart = activeMonth < startMonth;
+      const displayMonth = beforeStart ? startMonth : activeMonth;
+      return {
+        ...f,
+        ...occurrence,
+        id: occurrence?.id || f.id,
+        name: f.name,
+        valueCents: safeCents(f.valueCents),
+        __futureFixed: beforeStart,
+        __futureDueDate: beforeStart ? dueDateForMonth(startMonth, f.dueDay) : dueDateForMonth(displayMonth, f.dueDay),
+        status: occurrence?.status || "pending",
+      };
+    })
+    .sort((a, b) => {
+      const da = a.__futureDueDate || a.dueDate;
+      const db = b.__futureDueDate || b.dueDate;
+      return da > db ? 1 : -1;
+    });
 
   const toggleBillPayment = (billId) => {
     setData((d) => {
@@ -1205,27 +1214,36 @@ function Dashboard({ data, setData, goTab, userName }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }} className="mf-grid-2">
         <div className="mf-card" style={{ padding: 18 }}>
-          <SectionTitle title="Contas fixas do mês" subtitle={`${fixedThisMonth.length} ocorrência(s) · ${monthLabel(activeMonth)}`} action={<LinkBtn onClick={() => goTab("accounts")}>Ver contas</LinkBtn>} />
+          <SectionTitle title="Contas fixas" subtitle={`${fixedThisMonth.length} item(ns) · referência ${monthLabel(activeMonth)}`} action={<LinkBtn onClick={() => goTab("accounts")}>Ver contas</LinkBtn>} />
           {fixedThisMonth.length === 0 ? (
             <EmptyState icon={Landmark} title="Nenhuma conta fixa" description="Cadastre aluguel, internet, luz e outras recorrências." />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {fixedThisMonth.map((b) => (
-                <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid var(--border)", flexWrap: "wrap" }}>
-                  <div style={{ flex: 1, minWidth: 130 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{b.name}</div>
-                    <div style={{ fontSize: 11.5, color: "var(--text-faint)" }}>vence {fmtDateBR(b.dueDate)} · {b.status === "paid" ? "Paga" : "Pendente"}</div>
+              {fixedThisMonth.map((b) => {
+                const isFuture = !!b.__futureFixed;
+                return (
+                  <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderTop: "1px solid var(--border)", flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 130 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13.5 }}>{b.name}</div>
+                      <div style={{ fontSize: 11.5, color: isFuture ? "var(--brand-2)" : "var(--text-faint)" }}>
+                        {isFuture
+                          ? `Próximo vencimento · ${fmtDateBR(b.__futureDueDate)}`
+                          : `vence ${fmtDateBR(b.dueDate)} · ${b.status === "paid" ? "Paga" : "Pendente"}`}
+                      </div>
+                    </div>
+                    <Money cents={isFuture ? b.valueCents : b.valueCents} weight={700} />
+                    {!isFuture && (
+                      <button
+                        className={`mf-btn ${b.status === "paid" ? "mf-btn-ghost" : "mf-btn-primary"} mf-focus`}
+                        style={{ padding: "6px 9px", fontSize: 11.5 }}
+                        onClick={() => toggleBillPayment(b.id)}
+                      >
+                        {b.status === "paid" ? "Marcar como pendente" : "Marcar como paga"}
+                      </button>
+                    )}
                   </div>
-                  <Money cents={b.valueCents} weight={700} />
-                  <button
-                    className={`mf-btn ${b.status === "paid" ? "mf-btn-ghost" : "mf-btn-primary"} mf-focus`}
-                    style={{ padding: "6px 9px", fontSize: 11.5 }}
-                    onClick={() => toggleBillPayment(b.id)}
-                  >
-                    {b.status === "paid" ? "Marcar como pendente" : "Marcar como paga"}
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -1326,7 +1344,11 @@ function Transactions({ data, setData, quickAction, clearQuickAction }) {
   const toast = useToast(); const fin = useFinance(data);
   const activeMonth = getActiveMonth(data);
   const [modal, setModal] = useState(false), [form, setForm] = useState(emptyTx()), [errors, setErrors] = useState({}), [confirmId, setConfirmId] = useState(null), [search, setSearch] = useState(""), [filterType, setFilterType] = useState("all"), [sortDesc, setSortDesc] = useState(true), [transferModal, setTransferModal] = useState(false);
-  const openNew = (type = "expense") => { setForm({ ...emptyTx(), type, date: activeMonth + "-01" }); setErrors({}); setModal(true); };
+  const openNew = (type = "expense") => {
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    setForm({ ...emptyTx(), type, date: activeMonth + "-01", accountId: accounts.length === 1 ? accounts[0].id : "" });
+    setErrors({}); setModal(true);
+  };
   useEffect(() => {
     if (!quickAction) return;
     if (quickAction === "income" || quickAction === "expense") openNew(quickAction);
@@ -1344,7 +1366,7 @@ function Transactions({ data, setData, quickAction, clearQuickAction }) {
   return <div className="mf-anim-in">
     <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:16, alignItems:"center" }}><div style={{position:"relative",flex:"1 1 200px",minWidth:160}}><Search size={15} style={{position:"absolute",left:11,top:11,color:"var(--text-faint)"}}/><input className="mf-input" style={{paddingLeft:34}} placeholder="Pesquisar transações…" value={search} onChange={(e)=>setSearch(e.target.value)}/></div><SegTabs value={filterType} onChange={setFilterType} options={[{value:"all",label:"Todas"},{value:"income",label:"Entradas"},{value:"expense",label:"Saídas"}]}/><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setSortDesc(s=>!s)}><Filter size={14}/> {sortDesc?"Mais recentes":"Mais antigas"}</button><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setTransferModal(true)}><ArrowRightLeft size={14}/> Transferir</button><button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={15}/> Nova transação</button></div>
     {list.length===0?<EmptyState icon={ArrowLeftRight} title="Nenhuma transação encontrada" description="Adicione uma transação ou ajuste os filtros de pesquisa." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14}/> Nova transação</button>}/>:<div className="mf-card" style={{overflow:"hidden"}}>{list.map((t,idx)=>{const cat=fin.categoryOf(t.categoryId),acc=data.accounts.find(a=>a.id===t.accountId);return <div key={t.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderTop:idx===0?"none":"1px solid var(--border)"}}><IconBadge icon={cat?.icon||"💸"} color={cat?.color||"#888"}/><div style={{flex:1,minWidth:0}}><div style={{fontWeight:600,fontSize:13.5}}>{t.description}</div><div style={{fontSize:11.5,color:"var(--text-faint)"}}>{fmtDateBR(t.date)} · {cat?.name||"—"} · {acc?.name||"—"}</div></div><Money cents={t.type==="income"?t.valueCents:-t.valueCents} sign weight={700} size={14}/><div style={{display:"flex",gap:4}}><IconBtn onClick={()=>openEdit(t)}><Pencil size={14}/></IconBtn><IconBtn onClick={()=>setConfirmId(t.id)} danger><Trash2 size={14}/></IconBtn></div></div>})}</div>}
-    <Modal open={modal} onClose={()=>setModal(false)} title={form.id?"Editar transação":"Nova transação"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button></>}><SegTabs value={form.type} onChange={v=>setForm(f=>({...f,type:v}))} options={[{value:"expense",label:"Saída"},{value:"income",label:"Entrada"}]}/><div style={{height:14}}/><Field label="Descrição"><input className="mf-input" value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Ex: Mercado, Salário…"/>{errors.description&&<ErrorText>{errors.description}</ErrorText>}</Field><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Valor (R$)"><input className="mf-input" inputMode="decimal" value={form.value} onChange={e=>setForm(f=>({...f,value:e.target.value}))} placeholder="0,00"/>{errors.value&&<ErrorText>{errors.value}</ErrorText>}</Field><Field label="Data"><input className="mf-input" type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>{errors.date&&<ErrorText>{errors.date}</ErrorText>}</Field></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Categoria"><select className="mf-input" value={form.categoryId} onChange={e=>setForm(f=>({...f,categoryId:e.target.value}))}><option value="">Selecione…</option>{data.categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}</select>{errors.categoryId&&<ErrorText>{errors.categoryId}</ErrorText>}</Field><Field label="Conta"><select className="mf-input" value={form.accountId} onChange={e=>setForm(f=>({...f,accountId:e.target.value}))}><option value="">Selecione…</option>{data.accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select>{errors.accountId&&<ErrorText>{errors.accountId}</ErrorText>}</Field></div><Field label="Observação (opcional)"><input className="mf-input" value={form.note||""} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/></Field></Modal>
+    <Modal open={modal} onClose={()=>setModal(false)} title={form.id?"Editar transação":"Nova transação"} footer={<><button className="mf-btn mf-btn-ghost mf-focus" onClick={()=>setModal(false)}>Cancelar</button><button className="mf-btn mf-btn-primary mf-focus" onClick={save}>Salvar</button></>}><SegTabs value={form.type} onChange={v=>setForm(f=>({...f,type:v}))} options={[{value:"expense",label:"Saída"},{value:"income",label:"Entrada"}]}/><div style={{height:14}}/><Field label="Descrição"><input className="mf-input" value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Ex: Mercado, Salário…"/>{errors.description&&<ErrorText>{errors.description}</ErrorText>}</Field><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Valor (R$)"><input className="mf-input" inputMode="decimal" value={form.value} onChange={e=>setForm(f=>({...f,value:e.target.value}))} placeholder="0,00"/>{errors.value&&<ErrorText>{errors.value}</ErrorText>}</Field><Field label="Data"><input className="mf-input" type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>{errors.date&&<ErrorText>{errors.date}</ErrorText>}</Field></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}><Field label="Categoria"><select className="mf-input" value={form.categoryId} onChange={e=>setForm(f=>({...f,categoryId:e.target.value}))}><option value="">Selecione…</option>{data.categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}</select>{errors.categoryId&&<ErrorText>{errors.categoryId}</ErrorText>}</Field><Field label={data.accounts.length === 1 ? "Conta" : "Conta (onde aconteceu)"}><select className="mf-input" value={form.accountId} onChange={e=>setForm(f=>({...f,accountId:e.target.value}))}><option value="">{data.accounts.length ? "Selecione…" : "Cadastre uma conta primeiro"}</option>{data.accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select>{data.accounts.length > 1 && <div style={{fontSize:11.5,color:"var(--text-faint)",marginTop:5}}>Escolha em qual conta o dinheiro entrou ou saiu.</div>}{errors.accountId&&<ErrorText>{errors.accountId}</ErrorText>}</Field></div><Field label="Observação (opcional)"><input className="mf-input" value={form.note||""} onChange={e=>setForm(f=>({...f,note:e.target.value}))}/></Field></Modal>
     <TransferModal open={transferModal} onClose={()=>setTransferModal(false)} data={data} setData={setData} toast={toast}/><ConfirmDialog open={!!confirmId} title="Excluir transação" message={`Excluir "${data.transactions.find(t=>t.id===confirmId)?.description||""}"? Essa ação não pode ser desfeita.`} onCancel={()=>setConfirmId(null)} onConfirm={()=>remove(confirmId)}/>
   </div>;
 }
@@ -1636,23 +1658,22 @@ function FixedAccounts({ data, setData }) {
     {rows.length === 0 ? <EmptyState icon={Landmark} title="Nenhuma conta fixa" description="Cadastre modelos recorrentes como aluguel, internet e luz." action={<button className="mf-btn mf-btn-primary mf-focus" onClick={openNew}><Plus size={14} /> Nova conta fixa</button>} /> :
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {rows.map(f => {
-          const occ = data.bills.find(b => b.fixedAccountId === f.id && b.occurrenceKey === occurrenceKey(f.id, month));
+          const startMonth = monthKeyOf(f.startDate || isoToday());
+          const beforeStart = month < startMonth;
+          const occ = beforeStart ? null : data.bills.find(b => b.fixedAccountId === f.id && b.occurrenceKey === occurrenceKey(f.id, month));
           const paid = occ?.status === "paid";
           return <div key={f.id} className="mf-card" style={{ padding: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <IconBadge icon="🔁" color="var(--brand-2)" />
             <div style={{ flex: 1, minWidth: 200 }}>
               <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 {f.name}
-                <Badge color={paid ? "var(--income)" : "var(--text-faint)"}>{paid ? "Paga" : "Pendente"}</Badge>
+                <Badge color={beforeStart ? "var(--brand-2)" : paid ? "var(--income)" : "var(--text-faint)"}>{beforeStart ? "Começa em breve" : paid ? "Paga" : "Pendente"}</Badge>
                 <Badge color={f.active ? "var(--brand-2)" : "var(--text-faint)"}>{f.active ? "Recorrência ativa" : "Recorrência pausada"}</Badge>
               </div>
-              <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 3 }}>
-                R$ {(safeCents(f.valueCents) / 100).toFixed(2).replace(".", ",")} · todo dia {f.dueDay}
-                {monthKeyOf(f.startDate || isoToday()) > month ? ` · começa em ${fmtDateBR(f.startDate)}` : ` · competência ${monthLabel(month)}`}
-              </div>
+              <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 3 }}>R$ {(safeCents(f.valueCents) / 100).toFixed(2).replace(".", ",")} · todo dia {f.dueDay} · {beforeStart ? `começa em ${fmtDateBR(f.startDate)}` : `competência ${monthLabel(month)}`}</div>
             </div>
             <Money cents={f.valueCents} weight={700} />
-            {f.active && <button className={`mf-btn ${paid ? "mf-btn-ghost" : "mf-btn-primary"} mf-focus`} style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => toggleOccurrence(f.id)}>{paid ? "Marcar como pendente" : "Marcar como paga"}</button>}
+            {f.active && !beforeStart && <button className={`mf-btn ${paid ? "mf-btn-ghost" : "mf-btn-primary"} mf-focus`} style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => toggleOccurrence(f.id)}>{paid ? "Marcar como pendente" : "Marcar como paga"}</button>}
             <button className="mf-btn mf-btn-ghost mf-focus" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => toggleActive(f)}>{f.active ? "Pausar recorrência" : "Ativar recorrência"}</button>
             <IconBtn onClick={() => openEdit(f)}><Pencil size={13} /></IconBtn>
             <IconBtn onClick={() => setConfirmId(f.id)} danger><Trash2 size={13} /></IconBtn>
