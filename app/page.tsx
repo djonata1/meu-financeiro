@@ -985,7 +985,7 @@ function MobileQuickActions({ tab, setTab, quickAction, setQuickAction }) {
     { key: "expense", label: "Despesa", icon: ArrowDownCircle, tone: "var(--expense)" },
   ];
   return (
-    <div className="mf-mobile-bottom" style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 90, background: "var(--surface)", borderTop: "1px solid var(--border)", padding: "8px 14px max(8px, env(safe-area-inset-bottom))", justifyContent: "space-around", alignItems: "center" }}>
+    <div className="mf-mobile-bottom" style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 90, background: "var(--surface)", borderTop: "1px solid var(--border)", padding: "8px 14px max(8px, env(safe-area-inset-bottom))", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", alignItems: "center", justifyItems: "center" }}>
       {open && <div style={{ position: "absolute", left: 0, right: 0, bottom: 72, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, padding: "0 18px" }}>
         {items.map(({ key, label, icon: Icon, tone }) => (
           <button key={key} className="mf-card mf-focus mf-anim-pop" onClick={() => action(key)} style={{ minHeight: 76, padding: 10, color: "var(--text)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 7 }}>
@@ -996,7 +996,7 @@ function MobileQuickActions({ tab, setTab, quickAction, setQuickAction }) {
       </div>}
       <button className="mf-focus" onClick={() => setTab("dashboard")} style={{ background: "none", border: 0, color: tab === "dashboard" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><LayoutDashboard size={19}/><span>Início</span></button>
       <button className="mf-focus" onClick={() => setTab("transactions")} style={{ background: "none", border: 0, color: tab === "transactions" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><ArrowLeftRight size={19}/><span>Transações</span></button>
-      <button aria-label="Adicionar lançamento" className="mf-focus" onClick={() => setOpen(v => !v)} style={{ width: 54, height: 54, marginTop: -26, borderRadius: "50%", border: "4px solid var(--bg)", background: "var(--brand)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 8px 22px rgba(0,0,0,.25)" }}>{open ? <X size={27}/> : <Plus size={28}/>}</button>
+      <button aria-label="Adicionar lançamento" className="mf-focus" onClick={() => setOpen(v => !v)} style={{ width: 58, height: 58, marginTop: -28, padding: 0, borderRadius: "50%", border: "4px solid var(--bg)", background: "var(--brand)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", justifySelf: "center", alignSelf: "center", cursor: "pointer", boxShadow: "0 8px 22px rgba(0,0,0,.25)" }}>{open ? <X size={27}/> : <Plus size={28}/>}</button>
       <button className="mf-focus" onClick={() => setTab("goals")} style={{ background: "none", border: 0, color: tab === "goals" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><Target size={19}/><span>Metas</span></button>
       <button className="mf-focus" onClick={() => setTab("settings")} style={{ background: "none", border: 0, color: tab === "settings" ? "var(--brand-2)" : "var(--text-muted)", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 700 }}><SettingsIcon size={19}/><span>Mais</span></button>
     </div>
@@ -1649,7 +1649,7 @@ function FixedAccounts({ data, setData }) {
 function invoiceMonthFor(purchaseDateISO, closingDay, offset) { const d=parseISO(purchaseDateISO); let base=new Date(d.getFullYear(),d.getMonth(),1); if(d.getDate()>Number(closingDay)) base=new Date(base.getFullYear(),base.getMonth()+1,1); const target=new Date(base.getFullYear(),base.getMonth()+offset,1); return target.getFullYear()+"-"+String(target.getMonth()+1).padStart(2,"0"); }
 function computeInvoices(card,purchases){const map={};for(const p of purchases.filter(p=>p.cardId===card.id)){const installments=Math.max(1,Number(p.installments)||1);for(let k=0;k<installments;k++){const mk=invoiceMonthFor(p.date,card.closingDay,k);if(!map[mk])map[mk]={total:0,items:[]};map[mk].total+=safeCents(p.installmentValueCents);map[mk].items.push({purchase:p,n:k+1});}}return map;}
 function emptyCard(){return{id:null,name:"",institution:"",limit:"",closingDay:10,dueDay:17,color:ACCOUNT_COLORS[0],active:true};} function emptyPurchase(){return{id:null,description:"",value:"",cardId:"",categoryId:"",date:isoToday(),installments:1,note:""};}
-function Cards({data,setData,quickAction,clearQuickAction}){
+function Cards({data,setData}){
  const toast=useToast(); const [cardModal,setCardModal]=useState(false),[cardForm,setCardForm]=useState(emptyCard()),[cardErrors,setCardErrors]=useState({}),[confirmCardId,setConfirmCardId]=useState(null),[purchaseModal,setPurchaseModal]=useState(false),[purchaseForm,setPurchaseForm]=useState(emptyPurchase()),[purchaseErrors,setPurchaseErrors]=useState({}),[confirmPurchaseId,setConfirmPurchaseId]=useState(null),[expandedCard,setExpandedCard]=useState(data.cards[0]?.id||null),[payModal,setPayModal]=useState(null),[payAccount,setPayAccount]=useState(""); const paying=useRef(false); const currentMonth=getActiveMonth(data);
  useEffect(() => {
   if (quickAction === "cardExpense") {
@@ -1938,7 +1938,6 @@ function Goals({ data, setData }) {
 
 function Reports({ data }) {
   const fin = useFinance(data);
-  const activeMonth = getActiveMonth(data);
   const [period, setPeriod] = useState("month");
   const [customStart, setCustomStart] = useState(isoToday().slice(0, 8) + "01");
   const [customEnd, setCustomEnd] = useState(isoToday());
@@ -1947,10 +1946,10 @@ function Reports({ data }) {
     const today = isoToday();
     if (period === "today") return { start: today, end: today };
     if (period === "week") return { start: addMonthsISO(today, 0).slice(0, 10) > today ? today : shiftDays(today, -7), end: today };
-    if (period === "month") return { start: activeMonth + "-01", end: monthEndISO(activeMonth) };
+    if (period === "month") return { start: today.slice(0, 8) + "01", end: today };
     if (period === "year") return { start: today.slice(0, 4) + "-01-01", end: today };
     return { start: customStart, end: customEnd };
-  }, [period, customStart, customEnd, activeMonth]);
+  }, [period, customStart, customEnd]);
 
   const totals = fin.periodTotals(start, end);
 
